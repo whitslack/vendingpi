@@ -279,7 +279,7 @@ Bitcoin::Bitcoin(const char *host, uint16_t port, bool testnet, const char privk
 		testnet(testnet), privkey(decode_privkey(privkey)), pubkey(privkey_to_pubkey(this->privkey)), address(pubkey_to_address(pubkey, testnet)),
 		output_script(address_to_script(address)), event_fd(event_fd), aio(64), n_requested_blocks(), credit() {
 	try {
-		FileDescriptor fd("tx_hashes", O_RDONLY | O_CLOEXEC);
+		FileDescriptor fd(testnet ? "tx_hashes-testnet" : "tx_hashes", O_RDONLY | O_CLOEXEC);
 		struct stat st;
 		fd.fstat(&st);
 		fd.fadvise(0, 0, POSIX_FADV_SEQUENTIAL);
@@ -556,7 +556,7 @@ void Bitcoin::dispatch(const MerkleBlockMessage &msg) {
 	isha << static_cast<const BlockHeader &>(msg);
 	osha << isha.digest();
 	auto digest = osha.digest();
-	FileDescriptor fd("block_hashes", O_RDWR | O_CLOEXEC);
+	FileDescriptor fd(testnet ? "block_hashes-testnet" : "block_hashes", O_RDWR | O_CLOEXEC);
 	fd.fadvise(0, 0, POSIX_FADV_RANDOM);
 	for (off_t pos = fd.lseek(0, SEEK_END), end = std::max<off_t>(pos - 100 * sizeof(digest256_t), 0); (pos -= sizeof(digest256_t)) >= end;) {
 		digest256_t hash;
@@ -601,7 +601,7 @@ void Bitcoin::do_handshake() {
 	this->init_version_message(msg);
 	msg.user_agent = "/VendingPi:" VERSION "(vendingpi@mattwhitlock.name)/";
 	{
-		FileDescriptor fd("block_hashes", O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+		FileDescriptor fd(testnet ? "block_hashes-testnet" : "block_hashes", O_RDWR | O_CREAT | O_CLOEXEC, 0644);
 		struct stat st;
 		fd.fstat(&st);
 		digest256_t genesis_hash, hash;
@@ -625,7 +625,7 @@ void Bitcoin::do_handshake() {
 void Bitcoin::send_get_blocks() {
 	GetBlocksMessage req;
 	req.version = protocol_version;
-	FileDescriptor fd("block_hashes");
+	FileDescriptor fd(testnet ? "block_hashes-testnet" : "block_hashes");
 	fd.fadvise(0, 0, POSIX_FADV_RANDOM);
 	struct stat st;
 	fd.fstat(&st);
@@ -678,14 +678,14 @@ bool Bitcoin::record_seen_tx(const digest256_t &tx_hash) {
 		tx_seen_deque.pop_front();
 	}
 	tx_seen_deque.push_back(tx_seen_pair.first);
-	FileDescriptor fd("tx_hashes~", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	FileDescriptor fd(testnet ? "tx_hashes-testnet~" : "tx_hashes~", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	BufferedSink<4096> bs(fd);
 	for (auto &tx_hash_itr : tx_seen_deque) {
 		bs << *tx_hash_itr;
 	}
 	bs.flush_fully();
 	fd.fsync();
-	posix::rename("tx_hashes~", "tx_hashes");
+	posix::rename(testnet ? "tx_hashes-testnet~" : "tx_hashes~", testnet ? "tx_hashes-testnet" : "tx_hashes");
 	FileDescriptor(".").fsync();
 	return true;
 }
