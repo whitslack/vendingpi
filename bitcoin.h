@@ -44,6 +44,8 @@ public:
 	static double median_price();
 
 private:
+	const char * const host;
+	const uint16_t port;
 	const bool testnet;
 	const PrivateKey privkey;
 	const PublicKey pubkey;
@@ -56,12 +58,15 @@ private:
 	std::deque<std::set<digest256_t>::const_iterator> tx_seen_deque;
 	std::vector<satoshi::OutPoint> outpoints;
 	std::vector<std::pair<uint64_t, satoshi::Script>> payments;
+	satoshi::TxMessage last_tx_sent;
 	uint64_t credit;
 
 public:
 	Bitcoin(const char *host, uint16_t port, bool testnet, const char privkey[], EventFD &event_fd);
 
 public:
+	void run() _noreturn;
+
 	void return_payment(unsigned cents);
 
 protected:
@@ -73,6 +78,7 @@ protected:
 	void dispatch(const satoshi::AlertMessage &msg) override;
 
 private:
+	void do_handshake();
 	void send_get_blocks();
 	bool record_seen_tx(const digest256_t &tx_hash);
 

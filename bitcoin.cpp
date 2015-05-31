@@ -3,6 +3,7 @@
 #include <cassert>
 #include <map>
 #include <system_error>
+#include <thread>
 
 #include <netinet/tcp.h>
 #include <sys/uio.h>
@@ -274,37 +275,9 @@ static bool verify(const SHA256::digest_type &digest, const uint8_t signature[],
 
 
 Bitcoin::Bitcoin(const char *host, uint16_t port, bool testnet, const char privkey[], EventFD &event_fd) :
-		Node(testnet ? MessageHeader::Magic::TESTNET3 : MessageHeader::Magic::MAIN, set_keep_alive(connect_with_retry(host, port))),
+		Node(testnet ? MessageHeader::Magic::TESTNET3 : MessageHeader::Magic::MAIN, set_keep_alive(connect_with_retry(host, port))), host(host), port(port),
 		testnet(testnet), privkey(decode_privkey(privkey)), pubkey(privkey_to_pubkey(this->privkey)), address(pubkey_to_address(pubkey, testnet)),
 		output_script(address_to_script(address)), event_fd(event_fd), aio(64), n_requested_blocks(), credit() {
-	VersionMessage msg;
-	this->init_version_message(msg);
-	msg.user_agent = "/VendingPi:" VERSION "(vendingpi@mattwhitlock.name)/";
-	try {
-		FileDescriptor fd("block_hashes", O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-		struct stat st;
-		fd.fstat(&st);
-		digest256_t genesis_hash, hash;
-		if (testnet) {
-			genesis_hash = { 0x43, 0x49, 0x7f, 0xd7, 0xf8, 0x26, 0x95, 0x71, 0x08, 0xf4, 0xa3, 0x0f, 0xd9, 0xce, 0xc3, 0xae, 0xba, 0x79, 0x97, 0x20, 0x84, 0xe9, 0x0e, 0xad, 0x01, 0xea, 0x33, 0x09, 0x00, 0x00, 0x00, 0x00 };
-		}
-		else {
-			genesis_hash = { 0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00 };
-		}
-		if (st.st_size == 0 || fd.read(hash.data(), hash.size()) != hash.size() || hash != genesis_hash) {
-			fd.lseek(0);
-			fd.ftruncate();
-			fd.write_fully(genesis_hash.data(), st.st_size = genesis_hash.size());
-		}
-		msg.start_height = static_cast<int32_t>(st.st_size / sizeof(digest256_t)) - 1;
-	}
-	catch (const std::system_error &e) {
-		if (e.code().value() != ENOENT) {
-			throw;
-		}
-	}
-	msg.relay = false;
-	this->send(msg);
 	try {
 		FileDescriptor fd("tx_hashes", O_RDONLY | O_CLOEXEC);
 		struct stat st;
@@ -324,6 +297,28 @@ Bitcoin::Bitcoin(const char *host, uint16_t port, bool testnet, const char privk
 		if (e.code().value() != ENOENT) {
 			throw;
 		}
+	}
+}
+
+void Bitcoin::run() {
+	static constexpr std::chrono::steady_clock::duration min_reconnect_delay = std::chrono::seconds(1), max_reconnect_delay = std::chrono::seconds(10);
+	for (std::chrono::steady_clock::duration reconnect_delay = min_reconnect_delay;;) {
+		try {
+			if (socket < 0) {
+				socket = set_keep_alive(connect_with_retry(host, port));
+			}
+			this->do_handshake();
+			reconnect_delay = min_reconnect_delay;
+			this->Node::run();
+		}
+		catch (const std::exception &e) {
+			if (elog.warn_enabled()) {
+				elog.warn() << "Bitcoin client failed: " << e.what() << "; will attempt to reconnect" << std::endl;
+			}
+		}
+		socket.close();
+		std::this_thread::sleep_for(reconnect_delay);
+		reconnect_delay = std::min(reconnect_delay + reconnect_delay / 2, max_reconnect_delay);
 	}
 }
 
@@ -440,11 +435,22 @@ void Bitcoin::return_payment(unsigned cents) {
 			print_address_or_script(elog.info() << " - payment of " << txout.amount << " to ", txout.script, testnet) << std::endl;
 		}
 	}
-	this->send(tx);
+	try {
+		this->send(tx);
+	}
+	catch (const std::exception &e) {
+		if (elog.warn_enabled()) {
+			elog.warn() << "failed to send transaction: " << e.what() << "; will retry" << std::endl;
+		}
+	}
+	last_tx_sent = std::move(tx);
 }
 
 void Bitcoin::dispatch(const VersionMessage &) {
 	this->send(VerAckMessage());
+	if (!last_tx_sent.outputs.empty()) {
+		this->send(last_tx_sent);
+	}
 	if (elog.info_enabled()) {
 		print_address_or_script(elog.info() << "watching for payments to ", output_script, testnet) << std::endl;
 	}
@@ -588,6 +594,32 @@ void Bitcoin::dispatch(const AlertMessage &msg) {
 		osha << isha.digest();
 		elog.warn() << "ALERT! (signature " << (verify(osha.digest(), msg.signature.data(), msg.signature.size(), satoshi_pubkey) ? "valid" : "INVALID!") << ") " << payload << std::endl;
 	}
+}
+
+void Bitcoin::do_handshake() {
+	VersionMessage msg;
+	this->init_version_message(msg);
+	msg.user_agent = "/VendingPi:" VERSION "(vendingpi@mattwhitlock.name)/";
+	{
+		FileDescriptor fd("block_hashes", O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+		struct stat st;
+		fd.fstat(&st);
+		digest256_t genesis_hash, hash;
+		if (testnet) {
+			genesis_hash = { 0x43, 0x49, 0x7f, 0xd7, 0xf8, 0x26, 0x95, 0x71, 0x08, 0xf4, 0xa3, 0x0f, 0xd9, 0xce, 0xc3, 0xae, 0xba, 0x79, 0x97, 0x20, 0x84, 0xe9, 0x0e, 0xad, 0x01, 0xea, 0x33, 0x09, 0x00, 0x00, 0x00, 0x00 };
+		}
+		else {
+			genesis_hash = { 0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f, 0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00 };
+		}
+		if (st.st_size == 0 || fd.read(hash.data(), hash.size()) != hash.size() || hash != genesis_hash) {
+			fd.lseek(0);
+			fd.ftruncate();
+			fd.write_fully(genesis_hash.data(), st.st_size = genesis_hash.size());
+		}
+		msg.start_height = static_cast<int32_t>(st.st_size / sizeof(digest256_t)) - 1;
+	}
+	msg.relay = false;
+	this->send(msg);
 }
 
 void Bitcoin::send_get_blocks() {
