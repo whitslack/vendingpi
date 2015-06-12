@@ -40,52 +40,7 @@ static Socket set_keep_alive(Socket &&socket) {
 	return std::move(socket);
 }
 
-static Bitcoin::PrivateKey decode_privkey(const char privkey[]) {
-	Bitcoin::PrivateKey ret;
-	uint8_t bytes[34];
-	size_t n = base58check_decode(bytes, sizeof bytes, privkey, std::strlen(privkey));
-	if (bytes[0] == 0x80) {
-		if (n == sizeof bytes) {
-			if (bytes[33] != 0x01) {
-				throw std::invalid_argument("unrecognized flags byte in private key");
-			}
-			bytes_to_mpn(ret.d, bytes + 1, 32);
-			ret.compress = true;
-			return ret;
-		}
-		if (n == sizeof bytes - 1) {
-			bytes_to_mpn(ret.d, bytes + 1, 32);
-			ret.compress = false;
-			return ret;
-		}
-	}
-	throw std::invalid_argument("expected private key");
-}
-
-static Bitcoin::PublicKey privkey_to_pubkey(const Bitcoin::PrivateKey &privkey) {
-	Bitcoin::PublicKey ret;
-	ecp_pubkey(ret.Q, secp256k1_p, secp256k1_a, secp256k1_G, privkey.d);
-	ret.compress = privkey.compress;
-	return ret;
-}
-
-static Sink & operator << (Sink &sink, const Bitcoin::PublicKey &pubkey) {
-	uint8_t bytes[32];
-	mpn_to_bytes(bytes, pubkey.Q[0]);
-	if (pubkey.compress) {
-		sink << static_cast<uint8_t>(mpn_even_p(pubkey.Q[1], MP_NLIMBS(32)) ? 0x02 : 0x03);
-		sink.write_fully(bytes, sizeof bytes);
-	}
-	else {
-		sink << static_cast<uint8_t>(0x04);
-		sink.write_fully(bytes, sizeof bytes);
-		mpn_to_bytes(bytes, pubkey.Q[1]);
-		sink.write_fully(bytes, sizeof bytes);
-	}
-	return sink;
-}
-
-static std::vector<uint8_t> encode_pubkey(const Bitcoin::PublicKey &pubkey) {
+static std::vector<uint8_t> serialize_pubkey(const PublicKey &pubkey) {
 	std::vector<uint8_t> ret;
 	ret.reserve(pubkey.compress ? 33 : 65);
 	VectorSink vs(ret);
@@ -93,36 +48,7 @@ static std::vector<uint8_t> encode_pubkey(const Bitcoin::PublicKey &pubkey) {
 	return ret;
 }
 
-static Bitcoin::Address pubkey_to_address(const Bitcoin::PublicKey &pubkey, bool testnet) {
-	SHA256 sha;
-	sha << pubkey;
-	RIPEMD160 rmd;
-	rmd << sha.digest();
-	return { testnet ? Bitcoin::Address::Type::TESTNET_PUBKEY_HASH : Bitcoin::Address::Type::PUBKEY_HASH, rmd.digest() };
-}
-
-static Script address_to_script(const Bitcoin::Address &address) {
-	Script txout_script;
-	switch (address.type) {
-		case Bitcoin::Address::Type::PUBKEY_HASH:
-		case Bitcoin::Address::Type::TESTNET_PUBKEY_HASH:
-			txout_script.push_opcode(Script::OP_DUP);
-			txout_script.push_opcode(Script::OP_HASH160);
-			txout_script.push_data(address.hash.data(), address.hash.size());
-			txout_script.push_opcode(Script::OP_EQUALVERIFY);
-			txout_script.push_opcode(Script::OP_CHECKSIG);
-			break;
-		case Bitcoin::Address::Type::SCRIPT_HASH:
-		case Bitcoin::Address::Type::TESTNET_SCRIPT_HASH:
-			txout_script.push_opcode(Script::OP_HASH160);
-			txout_script.push_data(address.hash.data(), address.hash.size());
-			txout_script.push_opcode(Script::OP_EQUAL);
-			break;
-	}
-	return txout_script;
-}
-
-static optional<Bitcoin::Address> scriptsig_to_address(const Script &txin_script, bool testnet) {
+static optional<Address> scriptsig_to_address(const Script &txin_script, bool testnet) {
 	auto itr = txin_script.begin(), end = txin_script.end();
 	if (txin_script.valid() && itr != end) {
 		auto size = itr.size();
@@ -130,8 +56,8 @@ static optional<Bitcoin::Address> scriptsig_to_address(const Script &txin_script
 			size = itr.size();
 			const uint8_t *data;
 			if ((size == 33 ? *(data = itr.data()) == 0x02 || *data == 0x03 : size == 65 && *(data = itr.data()) == 0x04) && ++itr == end) {
-				Bitcoin::Address address;
-				address.type = testnet ? Bitcoin::Address::Type::TESTNET_PUBKEY_HASH : Bitcoin::Address::Type::PUBKEY_HASH;
+				Address address;
+				address.type = testnet ? Address::Type::TESTNET_PUBKEY_HASH : Address::Type::PUBKEY_HASH;
 				SHA256 sha;
 				sha.write_fully(data, size);
 				RIPEMD160 rmd;
@@ -152,8 +78,8 @@ static std::ostream & print_address_or_script(std::ostream &os, const Script &tx
 			if (++itr != end && *itr == Script::OP_HASH160 && ++itr != end && itr.size() == 20) {
 				auto data = itr.data();
 				if (++itr != end && *itr == Script::OP_EQUALVERIFY && ++itr != end && *itr == Script::OP_CHECKSIG && ++itr == end) {
-					Bitcoin::Address address;
-					address.type = testnet ? Bitcoin::Address::Type::TESTNET_PUBKEY_HASH : Bitcoin::Address::Type::PUBKEY_HASH;
+					Address address;
+					address.type = testnet ? Address::Type::TESTNET_PUBKEY_HASH : Address::Type::PUBKEY_HASH;
 					std::copy(data, data + 20, address.hash.begin());
 					return os << base58check_encode(&address, sizeof address);
 				}
@@ -162,8 +88,8 @@ static std::ostream & print_address_or_script(std::ostream &os, const Script &tx
 		else if (*itr == Script::OP_HASH160 && ++itr != end && itr.size() == 20) {
 			auto data = itr.data();
 			if (++itr != end && *itr == Script::OP_EQUAL && ++itr == end) {
-				Bitcoin::Address address;
-				address.type = testnet ? Bitcoin::Address::Type::TESTNET_SCRIPT_HASH : Bitcoin::Address::Type::SCRIPT_HASH;
+				Address address;
+				address.type = testnet ? Address::Type::TESTNET_SCRIPT_HASH : Address::Type::SCRIPT_HASH;
 				std::copy(data, data + 20, address.hash.begin());
 				return os << base58check_encode(&address, sizeof address);
 			}
@@ -276,7 +202,7 @@ static bool verify(const SHA256::digest_type &digest, const uint8_t signature[],
 
 Bitcoin::Bitcoin(const char *host, uint16_t port, bool testnet, const char privkey[], EventFD &event_fd) :
 		Node(testnet ? MessageHeader::Magic::TESTNET3 : MessageHeader::Magic::MAIN, set_keep_alive(connect_with_retry(host, port))), host(host), port(port),
-		testnet(testnet), privkey(decode_privkey(privkey)), pubkey(privkey_to_pubkey(this->privkey)), address(pubkey_to_address(pubkey, testnet)),
+		testnet(testnet), privkey(decode_privkey(privkey, std::strlen(privkey))), pubkey(privkey_to_pubkey(this->privkey)), address(pubkey_to_address(pubkey, testnet)),
 		output_script(address_to_script(address)), event_fd(event_fd), aio(64), n_requested_blocks(), credit() {
 	try {
 		FileDescriptor fd(testnet ? "tx_hashes-testnet" : "tx_hashes", O_RDONLY | O_CLOEXEC);
@@ -420,7 +346,7 @@ void Bitcoin::return_payment(unsigned cents) {
 		auto signature = sign(osha.digest(), privkey.d);
 		signature.push_back(1); // SIGHASH_ALL
 		txin_script.push_data(signature.data(), signature.size());
-		auto pubkey = encode_pubkey(this->pubkey);
+		auto pubkey = serialize_pubkey(this->pubkey);
 		txin_script.push_data(pubkey.data(), pubkey.size());
 		swap(tx1.inputs[txin_idx].script, output_script_copy);
 	}

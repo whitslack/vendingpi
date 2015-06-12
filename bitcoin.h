@@ -11,27 +11,6 @@
 class Bitcoin : public satoshi::Node {
 
 public:
-	struct PrivateKey {
-		mp_limb_t d[MP_NLIMBS(32)];
-		bool compress;
-	};
-
-	struct PublicKey {
-		mp_limb_t Q[3][MP_NLIMBS(32)];
-		bool compress;
-	};
-
-	struct Address {
-		enum class Type : uint8_t {
-			PUBKEY_HASH = 0,
-			SCRIPT_HASH = 5,
-			TESTNET_PUBKEY_HASH = 111,
-			TESTNET_SCRIPT_HASH = 196,
-		} type;
-		digest160_t hash;
-	};
-
-public:
 	static constexpr uint64_t fee_per_kb = 1000, dust_threshold = 5460;
 
 public:
@@ -47,9 +26,9 @@ private:
 	const char * const host;
 	const uint16_t port;
 	const bool testnet;
-	const PrivateKey privkey;
-	const PublicKey pubkey;
-	const Address address;
+	const satoshi::PrivateKey privkey;
+	const satoshi::PublicKey pubkey;
+	const satoshi::Address address;
 	const satoshi::Script output_script;
 	EventFD &event_fd;
 	linux::AIOContext aio;
