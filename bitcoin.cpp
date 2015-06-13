@@ -471,6 +471,12 @@ done:
 	}
 }
 
+void Bitcoin::dispatch(const PingMessage &msg) {
+	PongMessage pong;
+	pong.nonce = msg.nonce;
+	this->send(pong);
+}
+
 void Bitcoin::dispatch(const RejectMessage &msg) {
 	if (elog.warn_enabled() && !elog.trace_enabled()) {
 		elog.warn() << "received reject " << msg << std::endl;

@@ -52,6 +52,7 @@ protected:
 	void dispatch(const satoshi::VersionMessage &msg) override;
 	void dispatch(const satoshi::InvMessage &msg) override;
 	void dispatch(const satoshi::TxMessage &msg) override;
+	void dispatch(const satoshi::PingMessage &msg) override;
 	void dispatch(const satoshi::RejectMessage &msg) override;
 	void dispatch(const satoshi::MerkleBlockMessage &msg) override;
 	void dispatch(const satoshi::AlertMessage &msg) override;
