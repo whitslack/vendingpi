@@ -201,16 +201,16 @@ int main(int argc, char *argv[]) {
 						elog.info() << "credit " << counter << std::endl;
 					}
 					credit += static_cast<int>(counter);
-					for (; credit >= 100; credit -= 100) {
+					for (; credit >= 100 - 1; credit -= 100) {
 						transmit_queue.push(CASH_BOX | COIN100 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
 					}
-					for (; credit >= 25; credit -= 25) {
+					for (; credit >= 25 - 1; credit -= 25) {
 						transmit_queue.push(CASH_BOX | COIN25 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
 					}
-					for (; credit >= 10; credit -= 10) {
+					for (; credit >= 10 - 1; credit -= 10) {
 						transmit_queue.push(CASH_BOX | COIN10 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
 					}
-					for (; credit >= 5; credit -= 5) {
+					for (; credit >= 5 - 1; credit -= 5) {
 						transmit_queue.push(CASH_BOX | COIN5 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
 					}
 				}
@@ -258,6 +258,10 @@ int main(int argc, char *argv[]) {
 					elog.trace() << microtimestamp() << " ACCEPT_ENABLE_IN " << accept_enable << std::endl;
 				}
 				if (!accept_enable) {
+					// don't penalize the next payment if the last one was rounded up
+					if (credit < 0) {
+						credit = 0;
+					}
 					// send tube status message
 					uint8_t tube_status = TUBE_STATUS | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY;
 					if (elog.trace_enabled()) {

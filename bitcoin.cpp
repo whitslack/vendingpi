@@ -255,7 +255,7 @@ void Bitcoin::return_payment(unsigned cents) {
 		credit = 0;
 		return;
 	}
-	uint64_t amount = cents ? static_cast<uint64_t>(std::llround(cents / median_price() * 1e6)) : 0;
+	uint64_t amount = cents ? static_cast<uint64_t>(cents / median_price() * 1e6) : 0;
 	TxMessage tx;
 	tx.version = 1;
 	tx.lock_time = 0;
@@ -467,7 +467,7 @@ void Bitcoin::dispatch(const TxMessage &msg) {
 	}
 done:
 	if (this->record_seen_tx(tx_hash)) {
-		event_fd.write(std::lround(static_cast<double>(amount) * median_price() / 1e6));
+		event_fd.write(static_cast<eventfd_t>(static_cast<double>(amount) * median_price() / 1e6));
 	}
 }
 
