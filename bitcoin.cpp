@@ -255,7 +255,7 @@ void Bitcoin::return_payment(unsigned cents) {
 		credit = 0;
 		return;
 	}
-	uint64_t amount = cents ? static_cast<uint64_t>(cents / median_price() * 1e6) : 0;
+	int64_t amount = cents ? static_cast<int64_t>(cents / median_price() * 1e6) : 0;
 	TxMessage tx;
 	tx.version = 1;
 	tx.lock_time = 0;
@@ -271,7 +271,7 @@ void Bitcoin::return_payment(unsigned cents) {
 	outpoints.clear();
 	std::map<Script *, uint64_t, deref_less<Script>> outputs;
 	for (auto itr = payments.rbegin(); amount > 0 && itr != payments.rend(); ++itr) {
-		uint64_t output_amount = std::min(amount, itr->first);
+		uint64_t output_amount = std::min(static_cast<uint64_t>(amount), itr->first);
 		auto pair = outputs.emplace(&itr->second, output_amount);
 		if (pair.second) {
 			tx_size += sizeof(uint64_t) + 1 + pair.first->first->size();
