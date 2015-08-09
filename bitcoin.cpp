@@ -282,11 +282,11 @@ void Bitcoin::return_payment(unsigned cents) {
 		amount -= output_amount;
 		credit -= output_amount;
 	}
-	int64_t fee = (tx_size + 1023) / 1024 * fee_per_kb;
+	int64_t fee = (tx_size + 999) / 1000 * fee_per_kb;
 	auto prune_output = [&tx_size, &outputs, &fee](std::map<Script *, uint64_t>::iterator outputs_itr) {
-		fee -= (tx_size + 1023) / 1024 * fee_per_kb;
+		fee -= (tx_size + 999) / 1000 * fee_per_kb;
 		tx_size -= sizeof(uint64_t) + 1 + outputs_itr->first->size();
-		fee += (tx_size + 1023) / 1024 * fee_per_kb;
+		fee += (tx_size + 999) / 1000 * fee_per_kb;
 		fee -= outputs_itr->second;
 		outputs.erase(outputs_itr);
 	};
@@ -321,9 +321,9 @@ void Bitcoin::return_payment(unsigned cents) {
 	}
 	tx.outputs.reserve(1 + outputs.size());
 	if (credit >= dust_threshold) {
-		fee -= (tx_size + 1023) / 1024 * fee_per_kb;
+		fee -= (tx_size + 999) / 1000 * fee_per_kb;
 		tx_size += sizeof(uint64_t) + 1 + output_script.size();
-		fee += (tx_size + 1023) / 1024 * fee_per_kb;
+		fee += (tx_size + 999) / 1000 * fee_per_kb;
 		if ((credit -= fee) >= dust_threshold) {
 			tx.outputs.push_back({ htole(credit), output_script });
 		}
