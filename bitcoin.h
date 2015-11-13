@@ -11,7 +11,7 @@
 class Bitcoin : public satoshi::Node {
 
 public:
-	static constexpr uint64_t fee_per_kb = 1000, dust_threshold = 5460;
+	static constexpr uint64_t fee_per_kb = 5000, dust_threshold = 5460;
 
 public:
 	static double bitcoinaverage_price();
