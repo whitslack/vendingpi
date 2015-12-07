@@ -184,6 +184,13 @@ static std::vector<uint8_t> sign(const SHA256::digest_type &digest, const mp_lim
 	bytes_to_mpn(z, digest.data(), digest.size());
 	mp_limb_t r[MP_NLIMBS(32)], s[MP_NLIMBS(32)];
 	ecp_sign(r, s, secp256k1_p, secp256k1_a, secp256k1_G, secp256k1_n, privkey, z);
+	static const mp_limb_t secp256k1_n_half[MP_NLIMBS(32)] = {
+		MP_LIMB_C(0x681B20A0, 0xDFE92F46), MP_LIMB_C(0x57A4501D, 0x5D576E73),
+		MP_LIMB_C(0xFFFFFFFE, 0xFFFFFFFF), MP_LIMB_C(0xFFFFFFFF, 0x7FFFFFFF)
+	};
+	if (mpn_cmp(s, secp256k1_n_half, MP_NLIMBS(32)) > 0) { // BIP62 requires low s value
+		mpn_sub_n(s, secp256k1_n, s, MP_NLIMBS(32));
+	}
 	std::vector<uint8_t> buffer;
 	VectorSink vs(buffer);
 	der_write_signature(vs, r, s);
