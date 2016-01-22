@@ -47,12 +47,15 @@ enum Pin {
 	PIN_DISPENSE5_OUT = 7,
 #if RPI_REV == 1
 	PIN_RESET_OUT = 21,
+	PIN_DISPENSE_ENABLE_OUT = 0,
 #elif RPI_REV == 2
 	PIN_RESET_OUT = 27,
+	PIN_DISPENSE_ENABLE_OUT = 2,
 #endif
 };
 
 enum Status {
+	STATUS_FLAG = 1 << 1,
 	POWER_UP = 0x63,
 	DEFECTIVE_SENSOR = 0x67,
 	ESCROW_RETURN = 0x6E,
@@ -84,6 +87,23 @@ enum CoinValue {
 	COIN5 = 3 << 5,
 	COIN_MASK = 3 << 5,
 };
+
+static const struct {
+	unsigned tube25_low_threshold, tube25_mid_threshold, tube25_full_threshold, tube25_capacity;
+	unsigned tube10_low_threshold, tube10_full_threshold, tube10_capacity;
+	unsigned tube5_low_threshold, tube5_full_threshold, tube5_capacity;
+}
+MARS_TRC_6000 = {
+	6, 6, 69, 69,
+	7, 99, 99,
+	6, 67, 67,
+},
+COINCO_9300_L = {
+	7, 22, 77, 95,
+	9, 113, 125,
+	7, 78, 86,
+},
+*tube_levels = &MARS_TRC_6000;
 
 static Bitcoin *bitcoin_ptr;
 
@@ -140,6 +160,7 @@ int main(int argc, char *argv[]) {
 	GPIO dispense10_out(PIN_DISPENSE10_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
 	GPIO dispense5_out(PIN_DISPENSE5_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
 	GPIO reset_out(PIN_RESET_OUT, GPIO::Polarity::ACTIVE_HIGH, GPIO::Direction::LOW);
+	GPIO dispense_enable_out(PIN_DISPENSE_ENABLE_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::LOW);
 	{
 		struct termios tios;
 		posix::tcgetattr(data_fd, tios);
@@ -161,14 +182,59 @@ int main(int argc, char *argv[]) {
 	bitcoin_ptr = &bitcoin;
 	std::thread bitcoin_thread(std::mem_fn(&Bitcoin::run), &bitcoin);
 
-	int credit = 0, dispense = 0;
+	int credit = 0, virtual_cents_in = 0, virtual_cents_out = 0;
+
+	unsigned tube25_full_threshold = tube_levels->tube25_full_threshold;
+	unsigned least_25c_coins = 0, most_25c_coins = tube_levels->tube25_capacity;
+	unsigned least_10c_coins = 0, most_10c_coins = tube_levels->tube10_capacity;
+	unsigned least_5c_coins = 0, most_5c_coins = tube_levels->tube5_capacity;
+
+	auto tube_status = [&]() {
+		return (virtual_cents_in >= 25 || least_25c_coins >= tube_levels->tube25_low_threshold ? TUBE25_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 10 || least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 5 || least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
+	};
+	auto print_tube_status = [&](std::ostream &os) -> std::ostream & {
+		os << "tube status: 25c:" << least_25c_coins;
+		if (most_25c_coins != least_25c_coins) {
+			os << '-' << most_25c_coins;
+		}
+		os << ", 10c:" << least_10c_coins;
+		if (most_10c_coins != least_10c_coins) {
+			os << '-' << most_10c_coins;
+		}
+		os << ", 5c:" << least_5c_coins;
+		if (most_5c_coins != least_5c_coins) {
+			os << '-' << most_5c_coins;
+		}
+		return os;
+	};
+	auto process_tube_status = [&](uint8_t data) {
+#define _(C) \
+		if (data & TUBE##C##_NOT_EMPTY) { \
+			least_##C##c_coins = std::max<int>(least_##C##c_coins, tube_levels->tube##C##_low_threshold); \
+			most_##C##c_coins = std::max<int>(most_##C##c_coins, tube_levels->tube##C##_low_threshold); \
+		} \
+		else { \
+			least_##C##c_coins = std::min<int>(least_##C##c_coins, tube_levels->tube##C##_low_threshold - 1); \
+			most_##C##c_coins = std::min<int>(most_##C##c_coins, tube_levels->tube##C##_low_threshold - 1); \
+		}
+		_(25)
+		_(10)
+		_(5)
+#undef _
+	};
 
 	enum { IDLE, INTERRUPTING, SENDING, WAITING, QUIESCENT } transmit_state = IDLE;
 	std::queue<uint8_t> transmit_queue;
 	posix::Timer<> transmit_timer;
 	std::chrono::steady_clock::time_point transmit_time = std::chrono::steady_clock::time_point::max();
 
-	bool dispensing25 = false, dispensing10 = false, dispensing5 = false;
+	bool receiving = false, dispensing = false;
+
+	bool dispensing25_in = false, dispensing25_out = false;
+	bool dispensing10_in = false, dispensing10_out = false;
+	bool dispensing5_in = false, dispensing5_out = false;
 	posix::Timer<> dispense_timer;
 	std::chrono::steady_clock::time_point dispense_time = std::chrono::steady_clock::time_point::max();
 
@@ -196,18 +262,6 @@ int main(int argc, char *argv[]) {
 						elog.info() << "credit " << counter << std::endl;
 					}
 					credit += static_cast<int>(counter);
-					for (; credit >= 100 - 1; credit -= 100) {
-						transmit_queue.push(CASH_BOX | COIN100 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
-					}
-					for (; credit >= 25 - 1; credit -= 25) {
-						transmit_queue.push(CASH_BOX | COIN25 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
-					}
-					for (; credit >= 10 - 1; credit -= 10) {
-						transmit_queue.push(CASH_BOX | COIN10 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
-					}
-					for (; credit >= 5 - 1; credit -= 5) {
-						transmit_queue.push(CASH_BOX | COIN5 | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY);
-					}
 				}
 			}
 #ifndef NO_HARDWARE
@@ -216,6 +270,45 @@ int main(int argc, char *argv[]) {
 				if (data_fd.read(&data, sizeof data) > 0) {
 					if (elog.trace_enabled()) {
 						elog.trace() << microtimestamp() << " DATA_IN " << std::hex << std::showbase << static_cast<unsigned>(data) << std::dec << std::endl;
+					}
+					if (receiving) {
+						receiving = false;
+						if (elog.trace_enabled()) {
+							elog.trace() << microtimestamp() << " SEND_OUT " << false << std::endl;
+						}
+						send_out.value(false);
+						if (data & STATUS_FLAG) { // non-coin event
+							transmit_queue.push(data);
+							tube25_full_threshold = (data & TUBE25_SENSE_UPPER_FLAG) ? tube_levels->tube25_full_threshold : tube_levels->tube25_mid_threshold;
+						}
+						else { // coin event
+							transmit_queue.push(static_cast<uint8_t>(data | tube_status()));
+							switch (data & COIN_MASK) {
+#define _(C, F) \
+								case COIN##C: \
+									if ((data & ROUTING_MASK) == CASH_BOX) { \
+										least_##C##c_coins = std::max<int>(least_##C##c_coins, F); \
+										most_##C##c_coins = std::max<int>(most_##C##c_coins, F); \
+									} \
+									else { \
+										least_##C##c_coins = std::min<int>(least_##C##c_coins + 1, F); \
+										most_##C##c_coins = std::min<int>(most_##C##c_coins + 1, F); \
+									} \
+									break;
+								_(25, tube25_full_threshold)
+								_(10, tube_levels->tube10_full_threshold)
+								_(5, tube_levels->tube5_full_threshold)
+#undef _
+							}
+							process_tube_status(data);
+						}
+					}
+					else if ((data & ~(TUBE25_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE5_NOT_EMPTY)) == TUBE_STATUS) {
+						process_tube_status(data);
+					}
+					if (elog.debug_enabled()) {
+						auto debug = elog.debug();
+						print_tube_status(debug) << std::endl;
 					}
 				}
 			}
@@ -246,63 +339,75 @@ int main(int argc, char *argv[]) {
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp() << " INTERRUPT_IN " << interrupt << std::endl;
 				}
+				if (receiving != interrupt) {
+					receiving = interrupt;
+					if (elog.trace_enabled()) {
+						elog.trace() << microtimestamp() << " SEND_OUT " << receiving << std::endl;
+					}
+					send_out.value(receiving);
+				}
 			}
 			if (pfds[4].revents) {
 				bool accept_enable = accept_enable_in.value();
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp() << " ACCEPT_ENABLE_IN " << accept_enable << std::endl;
+					elog.trace() << microtimestamp() << " ACCEPT_ENABLE_OUT " << accept_enable << std::endl;
 				}
+				accept_enable_out.value(accept_enable);
 				if (!accept_enable) {
-					// don't penalize the next payment if the last one was rounded up
-					if (credit < 0) {
-						credit = 0;
-					}
 					// send tube status message
-					uint8_t tube_status = TUBE_STATUS | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY;
+					uint8_t status = static_cast<uint8_t>(TUBE_STATUS | tube_status());
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(tube_status) << std::dec << std::endl;
+						elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(status) << std::dec << std::endl;
 					}
-					data_fd.write_fully(&tube_status, sizeof tube_status);
+					data_fd.write_fully(&status, sizeof status);
 				}
 			}
+#define _(C) \
+				bool dispense##C = dispense##C##_in.value(); \
+				if (elog.trace_enabled()) { \
+					elog.trace() << microtimestamp() << " DISPENSE" #C "_IN " << dispense##C << std::endl; \
+				} \
+				if (dispense##C != dispensing##C##_in) { \
+					if (dispensing##C##_in = dispense##C) { \
+						if (virtual_cents_in >= C) { \
+							virtual_cents_in -= C, virtual_cents_out += C; \
+						} \
+						else { \
+							if (elog.trace_enabled()) { \
+								elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
+							} \
+							dispense##C##_out.value(dispensing##C##_out = true); \
+							least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
+							most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
+						} \
+						dispensing = true; \
+						dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1)); \
+					} \
+					else if (dispensing##C##_out) { \
+						if (elog.trace_enabled()) { \
+							elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << false << std::endl; \
+						} \
+						dispense##C##_out.value(dispensing##C##_out = false); \
+					} \
+				}
 			if (pfds[5].revents) {
-				bool dispense25 = dispense25_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp() << " DISPENSE25_IN " << dispense25 << std::endl;
-				}
-				if (dispense25 != dispensing25 && (dispensing25 = dispense25)) {
-					dispense += 25;
-					dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1));
-				}
+				_(25)
 			}
 			if (pfds[6].revents) {
-				bool dispense10 = dispense10_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp() << " DISPENSE10_IN " << dispense10 << std::endl;
-				}
-				if (dispense10 != dispensing10 && (dispensing10 = dispense10)) {
-					dispense += 10;
-					dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1));
-				}
+				_(10)
 			}
 			if (pfds[7].revents) {
-				bool dispense5 = dispense5_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp() << " DISPENSE5_IN " << dispense5 << std::endl;
-				}
-				if (dispense5 != dispensing5 && (dispensing5 = dispense5)) {
-					dispense += 5;
-					dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1));
-				}
+				_(5)
 			}
+#undef _
 			if (pfds[8].revents) {
 				bool reset = reset_in.value();
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp() << " RESET_IN " << reset << std::endl;
+					elog.trace() << microtimestamp() << " RESET_OUT " << reset << std::endl;
 				}
-				if (!reset) {
-					transmit_queue.push(POWER_UP);
-				}
+				reset_out.value(reset);
 			}
 #endif
 			if (pfds[sizeof pfds / sizeof *pfds - 1].revents) {
@@ -329,9 +434,52 @@ int main(int argc, char *argv[]) {
 			}
 		}
 #ifndef NO_HARDWARE
+		auto now = std::chrono::steady_clock::now();
+		if (now >= dispense_time) {
+			if (dispensing) {
+				// VMC has finished dispensing change; return to customer
+				virtual_cents_out += credit, virtual_cents_in = credit = 0;
+				if (virtual_cents_out > 0) {
+					if (elog.info_enabled()) {
+						elog.info() << "return " << virtual_cents_out << std::endl;
+					}
+					posix::pthread_sigqueue(bitcoin_thread.native_handle(), SIGRTMIN, virtual_cents_out);
+				}
+				virtual_cents_out = 0;
+				dispensing = false;
+				dispense_time = std::chrono::steady_clock::time_point::max();
+			}
+			else {
+				if (elog.info_enabled()) {
+					elog.info() << "session timed out" << std::endl;
+				}
+				transmit_queue.push(ESCROW_RETURN);
+				dispensing = true;
+				dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1));
+			}
+		}
+		if (!dispensing && credit >= 5 - 2) {
+			while (credit >= 100 - 2) {
+				transmit_queue.push(static_cast<uint8_t>(CASH_BOX | COIN100 | tube_status()));
+				virtual_cents_in += 100, credit -= 100;
+			}
+			while (credit >= 25 - 2) {
+				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN25 | tube_status()));
+				virtual_cents_in += 25, credit -= 25;
+			}
+			while (credit >= 10 - 2) {
+				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN10 | tube_status()));
+				virtual_cents_in += 10, credit -= 10;
+			}
+			while (credit >= 5 - 2) {
+				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN5 | tube_status()));
+				virtual_cents_in += 5, credit -= 5;
+			}
+			dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(30));
+		}
 		switch (transmit_state) {
 			case QUIESCENT:
-				if (std::chrono::steady_clock::now() < transmit_time) {
+				if (now < transmit_time) {
 					break;
 				}
 				transmit_state = IDLE;
@@ -347,7 +495,7 @@ int main(int argc, char *argv[]) {
 				}
 				break;
 			case WAITING:
-				if (std::chrono::steady_clock::now() >= transmit_time) {
+				if (now >= transmit_time) {
 					// VMC did not request retransmission; assume byte was successfully received
 					transmit_state = QUIESCENT;
 					transmit_queue.pop();
@@ -361,15 +509,6 @@ int main(int argc, char *argv[]) {
 				break;
 			default:
 				break;
-		}
-		if (dispense > 0 && std::chrono::steady_clock::now() >= dispense_time) {
-			// VMC has finished dispensing change; return to customer
-			dispense += credit, credit = 0;
-			if (elog.info_enabled()) {
-				elog.info() << "return " << dispense << std::endl;
-			}
-			posix::pthread_sigqueue(bitcoin_thread.native_handle(), SIGRTMIN, dispense);
-			dispense = 0;
 		}
 #endif
 	}
