@@ -17,10 +17,10 @@ public:
 	};
 
 private:
-	uint pin;
+	unsigned pin;
 
 public:
-	explicit GPIO(uint pin, Polarity polarity = Polarity::ACTIVE_HIGH, Direction direction = Direction::IN);
+	explicit GPIO(unsigned pin, Polarity polarity = Polarity::ACTIVE_HIGH, Direction direction = Direction::IN);
 
 public:
 	bool value();

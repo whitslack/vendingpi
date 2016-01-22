@@ -13,7 +13,6 @@
 
 #include "bitcoin.h"
 #include "gpio.h"
-#include "saturate.h"
 #include "common/log.h"
 #include "common/narrow.h"
 #include "common/signal.h"
@@ -24,7 +23,7 @@
 
 Log elog(Log::TRACE);
 
-const char SERIAL_DEVICE[] = "/dev/ttyAMA0";
+static const char SERIAL_DEVICE[] = "/dev/ttyAMA0";
 
 enum Pin {
 	PIN_SEND_IN = 22,
@@ -62,29 +61,29 @@ enum Status {
 	DOUBLE_ARRIVAL = 0x23,
 	COIN_JAM = 0x27,
 	DOLLAR_COIN_NOT_ACCEPTED = 0x03,
-	TUBE25_SENSE_UPPER = 1 << 4,
+	TUBE25_SENSE_UPPER_FLAG = 1 << 4,
 };
 
 enum TubeStatus {
 	TUBE_STATUS = 0x23,
-	TUBE5_NOT_EMPTY = 1 << 4,
-	TUBE10_NOT_EMPTY = 1 << 3,
 	TUBE25_NOT_EMPTY = 1 << 2,
+	TUBE10_NOT_EMPTY = 1 << 3,
+	TUBE5_NOT_EMPTY = 1 << 4,
 };
 
 enum CoinRouting {
 	CASH_BOX = 0 << 0,
 	INVENTORY_TUBE = 1 << 0,
+	ROUTING_MASK = 1 << 0,
 };
 
 enum CoinValue {
-	COIN5 = 3 << 5,
-	COIN10 = 2 << 5,
-	COIN25 = 1 << 5,
 	COIN100 = 0 << 5,
+	COIN25 = 1 << 5,
+	COIN10 = 2 << 5,
+	COIN5 = 3 << 5,
+	COIN_MASK = 3 << 5,
 };
-
-extern const char _binary_wwwroot_index_html_start[], _binary_wwwroot_index_html_end[];
 
 static Bitcoin *bitcoin_ptr;
 
@@ -162,20 +161,16 @@ int main(int argc, char *argv[]) {
 	bitcoin_ptr = &bitcoin;
 	std::thread bitcoin_thread(std::mem_fn(&Bitcoin::run), &bitcoin);
 
-// 	Saturating<unsigned, 0, 86> least_5c_coins(0), most_5c_coins(86);
-// 	Saturating<unsigned, 0, 125> least_10c_coins(0), most_10c_coins(125);
-// 	Saturating<unsigned, 0, 95> least_25c_coins(0), most_25c_coins(95);
-
 	int credit = 0, dispense = 0;
 
 	enum { IDLE, INTERRUPTING, SENDING, WAITING, QUIESCENT } transmit_state = IDLE;
 	std::queue<uint8_t> transmit_queue;
 	posix::Timer<> transmit_timer;
-	std::chrono::steady_clock::time_point transmit_time = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::time_point transmit_time = std::chrono::steady_clock::time_point::max();
 
 	bool dispensing25 = false, dispensing10 = false, dispensing5 = false;
 	posix::Timer<> dispense_timer;
-	std::chrono::steady_clock::time_point dispense_time = transmit_time;
+	std::chrono::steady_clock::time_point dispense_time = std::chrono::steady_clock::time_point::max();
 
 	struct pollfd pfds[] = {
 		{ event_fd, POLLIN, 0 },
@@ -220,7 +215,7 @@ int main(int argc, char *argv[]) {
 				uint8_t data;
 				if (data_fd.read(&data, sizeof data) > 0) {
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " DATA_IN " << std::hex << std::showbase << static_cast<uint>(data) << std::dec << std::endl;
+						elog.trace() << microtimestamp() << " DATA_IN " << std::hex << std::showbase << static_cast<unsigned>(data) << std::dec << std::endl;
 					}
 				}
 			}
@@ -235,7 +230,7 @@ int main(int argc, char *argv[]) {
 						transmit_state = SENDING;
 						transmit_timer.clear();
 						if (elog.trace_enabled()) {
-							elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<uint>(transmit_queue.front()) << std::dec << std::endl;
+							elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(transmit_queue.front()) << std::dec << std::endl;
 						}
 						data_fd.write_fully(&transmit_queue.front(), sizeof(uint8_t));
 					}
@@ -265,7 +260,7 @@ int main(int argc, char *argv[]) {
 					// send tube status message
 					uint8_t tube_status = TUBE_STATUS | TUBE5_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE25_NOT_EMPTY;
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<uint>(tube_status) << std::dec << std::endl;
+						elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(tube_status) << std::dec << std::endl;
 					}
 					data_fd.write_fully(&tube_status, sizeof tube_status);
 				}
@@ -306,7 +301,7 @@ int main(int argc, char *argv[]) {
 					elog.trace() << microtimestamp() << " RESET_IN " << reset << std::endl;
 				}
 				if (!reset) {
-					transmit_queue.push(POWER_UP | TUBE25_SENSE_UPPER);
+					transmit_queue.push(POWER_UP);
 				}
 			}
 #endif
@@ -329,7 +324,7 @@ int main(int argc, char *argv[]) {
 				}
 				else {
 					// simulate "escrow return" signal from customer
-					transmit_queue.push(ESCROW_RETURN | TUBE25_SENSE_UPPER);
+					transmit_queue.push(ESCROW_RETURN);
 				}
 			}
 		}

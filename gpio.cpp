@@ -58,7 +58,7 @@ static GPIO::Edge string_to_edge(const char str[]) {
 }
 
 
-GPIO::GPIO(uint pin, GPIO::Polarity polarity, GPIO::Direction direction) : pin(pin) {
+GPIO::GPIO(unsigned pin, GPIO::Polarity polarity, GPIO::Direction direction) : pin(pin) {
 	std::string path("/sys/class/gpio/gpio"), pin_str = std::to_string(pin);
 	path += pin_str;
 	try {
