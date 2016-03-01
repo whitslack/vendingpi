@@ -289,12 +289,16 @@ void Bitcoin::return_payment(unsigned cents) {
 		amount -= output_amount;
 		credit -= output_amount;
 	}
-	int64_t fee = (tx_size + 999) / 1000 * fee_per_kb;
-	auto prune_output = [&tx_size, &outputs, &fee](std::map<Script *, uint64_t>::iterator outputs_itr) {
-		fee -= (tx_size + 999) / 1000 * fee_per_kb;
+	int64_t relay_fee = (tx_size + 999) / 1000 * relay_fee_per_kb;
+	int64_t mining_fee = tx_size * mining_fee_per_kb / 1000;
+	auto prune_output = [&tx_size, &outputs, &relay_fee, &mining_fee](std::map<Script *, uint64_t>::iterator outputs_itr) {
+		relay_fee -= (tx_size + 999) / 1000 * relay_fee_per_kb;
+		mining_fee -= tx_size * mining_fee_per_kb / 1000;
 		tx_size -= sizeof(uint64_t) + 1 + outputs_itr->first->size();
-		fee += (tx_size + 999) / 1000 * fee_per_kb;
-		fee -= outputs_itr->second;
+		relay_fee += (tx_size + 999) / 1000 * relay_fee_per_kb;
+		mining_fee += tx_size * mining_fee_per_kb / 1000;
+		relay_fee -= outputs_itr->second;
+		mining_fee -= outputs_itr->second;
 		outputs.erase(outputs_itr);
 	};
 	for (auto itr = outputs.begin(); itr != outputs.end();) {
@@ -305,16 +309,17 @@ void Bitcoin::return_payment(unsigned cents) {
 			++itr;
 		}
 	}
-	for (auto itr = payments.rbegin(); fee > 0 && itr != payments.rend(); ++itr) {
-		uint64_t fee_amount = std::min<uint64_t>(fee, itr->first);
+	for (auto itr = payments.rbegin(); (relay_fee > 0 || mining_fee > 0) && itr != payments.rend(); ++itr) {
 		auto outputs_itr = outputs.find(&itr->second);
 		if (outputs_itr != outputs.end()) {
+			uint64_t fee_amount = std::min<uint64_t>(std::max(relay_fee, mining_fee), itr->first);
 			if (outputs_itr->second - fee_amount < dust_threshold) {
 				prune_output(outputs_itr);
 			}
 			else {
 				outputs_itr->second -= fee_amount;
-				fee -= fee_amount;
+				relay_fee -= fee_amount;
+				mining_fee -= fee_amount;
 			}
 		}
 	}
@@ -323,20 +328,23 @@ void Bitcoin::return_payment(unsigned cents) {
 		credit = 0;
 		return;
 	}
-	if (fee < 0) {
-		credit -= fee, fee = 0;
+	if (relay_fee < 0 && mining_fee < 0) {
+		uint64_t fee_amount = -std::max(relay_fee, mining_fee);
+		credit += fee_amount, relay_fee += fee_amount, mining_fee += fee_amount;
 	}
 	tx.outputs.reserve(1 + outputs.size());
 	if (credit >= dust_threshold) {
-		fee -= (tx_size + 999) / 1000 * fee_per_kb;
+		relay_fee -= (tx_size + 999) / 1000 * relay_fee_per_kb;
+		mining_fee -= tx_size * mining_fee_per_kb / 1000;
 		tx_size += sizeof(uint64_t) + 1 + output_script.size();
-		fee += (tx_size + 999) / 1000 * fee_per_kb;
-		if ((credit -= fee) >= dust_threshold) {
-			tx.outputs.push_back({ htole(credit), output_script });
+		relay_fee += (tx_size + 999) / 1000 * relay_fee_per_kb;
+		mining_fee += tx_size * mining_fee_per_kb / 1000;
+		if ((credit -= std::max(relay_fee, mining_fee)) >= dust_threshold) {
+			tx.outputs.push_back({ credit, output_script });
 		}
 	}
 	for (auto &output : outputs) {
-		tx.outputs.push_back({ htole(output.second), std::move(*output.first) });
+		tx.outputs.push_back({ output.second, std::move(*output.first) });
 	}
 	outputs.clear();
 	payments.clear();
