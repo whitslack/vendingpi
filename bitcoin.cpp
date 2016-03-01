@@ -4,6 +4,7 @@
 #include <map>
 #include <system_error>
 #include <thread>
+#include <experimental/optional>
 
 #include <netinet/tcp.h>
 #include <sys/uio.h>
@@ -12,12 +13,12 @@
 #include "common/ecp.h"
 #include "common/log.h"
 #include "common/mpn.h"
-#include "common/optional.h"
 #include "common/ripemd.h"
 #include "common/serial.h"
 #include "common/sha.h"
 #include "libsatoshi/base58check.h"
 
+namespace stdx = std::experimental;
 using namespace satoshi;
 
 extern Log elog;
@@ -48,7 +49,7 @@ static std::vector<uint8_t> serialize_pubkey(const PublicKey &pubkey) {
 	return ret;
 }
 
-static optional<Address> scriptsig_to_address(const Script &txin_script, bool testnet) {
+static stdx::optional<Address> scriptsig_to_address(const Script &txin_script, bool testnet) {
 	auto itr = txin_script.begin(), end = txin_script.end();
 	if (txin_script.valid() && itr != end) {
 		auto size = itr.size();
@@ -68,7 +69,7 @@ static optional<Address> scriptsig_to_address(const Script &txin_script, bool te
 		}
 		// TODO recognize P2SH multisig scriptsigs
 	}
-	return nullopt;
+	return stdx::nullopt;
 }
 
 static std::ostream & print_address_or_script(std::ostream &os, const Script &txout_script, bool testnet) {

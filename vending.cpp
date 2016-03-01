@@ -14,6 +14,7 @@
 #include "bitcoin.h"
 #include "gpio.h"
 #include "common/log.h"
+#include "common/memory.h"
 #include "common/narrow.h"
 #include "common/signal.h"
 #include "common/termios.h"
@@ -137,10 +138,12 @@ int main(int argc, char *argv[]) {
 		posix::sigemptyset(sa.sa_mask);
 		sa.sa_flags = SA_RESTART;
 		posix::sigaction(SIGALRM, &sa);
+		sa.sa_handler = SIG_IGN;
+		posix::sigaction(SIGPIPE, &sa);
 		sa.sa_sigaction = &bitcoin_handler;
 		sa.sa_flags = SA_RESTART | SA_SIGINFO;
 		posix::sigaction(SIGRTMIN, &sa);
-		posix::pthread_sigmask(SIG_BLOCK, { SIGALRM });
+		posix::pthread_sigmask(SIG_BLOCK, posix::SignalSet { SIGALRM });
 	}
 
 	EventFD event_fd;
@@ -252,7 +255,7 @@ int main(int argc, char *argv[]) {
 #endif
 		{ STDIN_FILENO, POLLIN, 0 },
 	};
-	nfds_t nfds = sizeof pfds / sizeof *pfds;
+	nfds_t nfds = std::size(pfds);
 	for (;;) {
 		if (posix::ppoll(pfds, nfds, nullptr, posix::SignalSet{ }) > 0) {
 			if (pfds[0].revents) {
@@ -410,13 +413,13 @@ int main(int argc, char *argv[]) {
 				reset_out.value(reset);
 			}
 #endif
-			if (pfds[sizeof pfds / sizeof *pfds - 1].revents) {
+			if (pfds[std::size(pfds) - 1].revents) {
 				int cents;
 				if (!(std::cin >> cents)) {
 					if (elog.debug_enabled()) {
 						elog.debug() << "stdin reached EOF" << std::endl;
 					}
-					pfds[sizeof pfds / sizeof *pfds - 1].revents = 0;
+					pfds[std::size(pfds) - 1].revents = 0;
 					--nfds;
 				}
 				else if (cents > 0) {
