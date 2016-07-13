@@ -230,15 +230,15 @@ int main(int argc, char *argv[]) {
 
 	enum { IDLE, INTERRUPTING, SENDING, WAITING, QUIESCENT } transmit_state = IDLE;
 	std::queue<uint8_t> transmit_queue;
-	posix::Timer<> transmit_timer;
+	posix::Timer<std::chrono::steady_clock> transmit_timer;
 	std::chrono::steady_clock::time_point transmit_time = std::chrono::steady_clock::time_point::max();
 
-	bool receiving = false, dispensing = false;
+	bool accept_enabled = accept_enable_in.value(), receiving = false, session_ending = false;
 
 	bool dispensing25_in = false, dispensing25_out = false;
 	bool dispensing10_in = false, dispensing10_out = false;
 	bool dispensing5_in = false, dispensing5_out = false;
-	posix::Timer<> dispense_timer;
+	posix::Timer<std::chrono::steady_clock> dispense_timer;
 	std::chrono::steady_clock::time_point dispense_time = std::chrono::steady_clock::time_point::max();
 
 	struct pollfd pfds[] = {
@@ -265,6 +265,7 @@ int main(int argc, char *argv[]) {
 						elog.info() << "credit " << counter << std::endl;
 					}
 					credit += static_cast<int>(counter);
+					virtual_cents_in += static_cast<int>(counter);
 				}
 			}
 #ifndef NO_HARDWARE
@@ -283,6 +284,9 @@ int main(int argc, char *argv[]) {
 						if (data & STATUS_FLAG) { // non-coin event
 							transmit_queue.push(data);
 							tube25_full_threshold = (data & TUBE25_SENSE_UPPER_FLAG) ? tube_levels->tube25_full_threshold : tube_levels->tube25_mid_threshold;
+							if ((data & ~TUBE25_SENSE_UPPER_FLAG) == ESCROW_RETURN) {
+								session_ending = true;
+							}
 						}
 						else { // coin event
 							transmit_queue.push(static_cast<uint8_t>(data | tube_status()));
@@ -365,6 +369,7 @@ int main(int argc, char *argv[]) {
 					}
 					data_fd.write_fully(&status, sizeof status);
 				}
+				accept_enabled = accept_enable;
 			}
 #define _(C) \
 				bool dispense##C = dispense##C##_in.value(); \
@@ -373,19 +378,23 @@ int main(int argc, char *argv[]) {
 				} \
 				if (dispense##C != dispensing##C##_in) { \
 					if (dispensing##C##_in = dispense##C) { \
-						if (virtual_cents_in >= C) { \
-							virtual_cents_in -= C, virtual_cents_out += C; \
+						if (session_ending) { \
+							if (virtual_cents_in >= C) { \
+								virtual_cents_in -= C, virtual_cents_out += C; \
+							} \
+							else { \
+								if (elog.trace_enabled()) { \
+									elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
+								} \
+								dispense##C##_out.value(dispensing##C##_out = true); \
+								least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
+								most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
+							} \
+							dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1)); \
 						} \
 						else { \
-							if (elog.trace_enabled()) { \
-								elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
-							} \
-							dispense##C##_out.value(dispensing##C##_out = true); \
-							least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
-							most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
+							credit += C; \
 						} \
-						dispensing = true; \
-						dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1)); \
 					} \
 					else if (dispensing##C##_out) { \
 						if (elog.trace_enabled()) { \
@@ -431,15 +440,15 @@ int main(int argc, char *argv[]) {
 					posix::pthread_sigqueue(bitcoin_thread.native_handle(), SIGRTMIN, -cents);
 				}
 				else {
-					// simulate "escrow return" signal from customer
-					transmit_queue.push(ESCROW_RETURN);
+					// force session timeout
+					dispense_time = std::chrono::steady_clock::time_point::min();
 				}
 			}
 		}
 #ifndef NO_HARDWARE
 		auto now = std::chrono::steady_clock::now();
 		if (now >= dispense_time) {
-			if (dispensing) {
+			if (session_ending) {
 				// VMC has finished dispensing change; return to customer
 				virtual_cents_out += credit, virtual_cents_in = credit = 0;
 				if (virtual_cents_out > 0) {
@@ -449,36 +458,17 @@ int main(int argc, char *argv[]) {
 					posix::pthread_sigqueue(bitcoin_thread.native_handle(), SIGRTMIN, virtual_cents_out);
 				}
 				virtual_cents_out = 0;
-				dispensing = false;
+				session_ending = false;
 				dispense_time = std::chrono::steady_clock::time_point::max();
 			}
 			else {
 				if (elog.info_enabled()) {
 					elog.info() << "session timed out" << std::endl;
 				}
+				session_ending = true;
 				transmit_queue.push(ESCROW_RETURN);
-				dispensing = true;
 				dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(1));
 			}
-		}
-		if (!dispensing && credit >= 5 - 2) {
-			while (credit >= 100 - 2) {
-				transmit_queue.push(static_cast<uint8_t>(CASH_BOX | COIN100 | tube_status()));
-				virtual_cents_in += 100, credit -= 100;
-			}
-			while (credit >= 25 - 2) {
-				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN25 | tube_status()));
-				virtual_cents_in += 25, credit -= 25;
-			}
-			while (credit >= 10 - 2) {
-				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN10 | tube_status()));
-				virtual_cents_in += 10, credit -= 10;
-			}
-			while (credit >= 5 - 2) {
-				transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN5 | tube_status()));
-				virtual_cents_in += 5, credit -= 5;
-			}
-			dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(30));
 		}
 		switch (transmit_state) {
 			case QUIESCENT:
@@ -488,14 +478,35 @@ int main(int argc, char *argv[]) {
 				transmit_state = IDLE;
 				// fall through
 			case IDLE:
-				if (!transmit_queue.empty()) {
-					// we have a byte to send; interrupt the VMC
-					transmit_state = INTERRUPTING;
-					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " INTERRUPT_OUT " << true << std::endl;
+				if (transmit_queue.empty()) {
+					if (credit < 5 - 2 || !accept_enabled || session_ending) {
+						break;
 					}
-					interrupt_out.value(true);
+					if (credit >= 100 - 2) {
+						transmit_queue.push(static_cast<uint8_t>(CASH_BOX | COIN100 | tube_status()));
+						credit -= 100;
+					}
+					else if (credit >= 25 - 2) {
+						transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN25 | tube_status()));
+						credit -= 25;
+					}
+					else if (credit >= 10 - 2) {
+						transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN10 | tube_status()));
+						credit -= 10;
+					}
+					else {
+						transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN5 | tube_status()));
+						credit -= 5;
+					}
+					// (re)set session timeout
+					dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + std::chrono::seconds(30));
 				}
+				// we have a byte to send; interrupt the VMC
+				transmit_state = INTERRUPTING;
+				if (elog.trace_enabled()) {
+					elog.trace() << microtimestamp() << " INTERRUPT_OUT " << true << std::endl;
+				}
+				interrupt_out.value(true);
 				break;
 			case WAITING:
 				if (now >= transmit_time) {
