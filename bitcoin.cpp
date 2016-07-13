@@ -208,7 +208,7 @@ static bool verify(const SHA256::digest_type &digest, const uint8_t signature[],
 }
 
 
-Bitcoin::Bitcoin(const char *host, uint16_t port, bool testnet, const char privkey[], EventFD &event_fd) :
+Bitcoin::Bitcoin(const char *host, in_port_t port, bool testnet, const char privkey[], EventFD &event_fd) :
 		Node(testnet ? MessageHeader::Magic::TESTNET3 : MessageHeader::Magic::MAIN, set_keep_alive(connect_with_retry(host, port))), host(host), port(port),
 		testnet(testnet), privkey(decode_privkey(privkey, std::strlen(privkey))), pubkey(privkey_to_pubkey(this->privkey)), address(pubkey_to_address(pubkey, testnet)),
 		output_script(address_to_script(address)), event_fd(event_fd), aio(64), n_requested_blocks(), credit() {

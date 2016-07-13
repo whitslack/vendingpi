@@ -129,7 +129,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 	auto host = argv[1];
-	auto port = narrow_check<uint16_t>(std::stoi(argv[2]));
+	auto port = narrow_check<in_port_t>(std::stoi(argv[2]));
 	auto bitcoin_privkey = argv[3];
 
 	{

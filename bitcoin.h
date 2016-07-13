@@ -42,7 +42,7 @@ private:
 	uint64_t credit;
 
 public:
-	Bitcoin(const char *host, uint16_t port, bool testnet, const char privkey[], EventFD &event_fd);
+	Bitcoin(const char *host, in_port_t port, bool testnet, const char privkey[], EventFD &event_fd);
 
 public:
 	void run() _noreturn;
