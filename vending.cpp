@@ -482,11 +482,14 @@ int main(int argc, char *argv[]) {
 					if (credit < 5 - 2 || !accept_enabled || session_ending) {
 						break;
 					}
+#if 0 // reporting dollar coin insertions prevents coin return from working
 					if (credit >= 100 - 2) {
 						transmit_queue.push(static_cast<uint8_t>(CASH_BOX | COIN100 | tube_status()));
 						credit -= 100;
 					}
-					else if (credit >= 25 - 2) {
+					else
+#endif
+					if (credit >= 25 - 2) {
 						transmit_queue.push(static_cast<uint8_t>(INVENTORY_TUBE | COIN25 | tube_status()));
 						credit -= 25;
 					}
