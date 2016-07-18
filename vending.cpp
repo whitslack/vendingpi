@@ -463,16 +463,15 @@ int main(int argc, char *argv[]) {
 				}
 				virtual_cents_out = 0;
 				session_ending = false;
-				dispense_time = std::chrono::steady_clock::time_point::max();
 			}
 			else {
 				if (elog.info_enabled()) {
 					elog.info() << "session timed out" << std::endl;
 				}
-				session_ending = true;
 				transmit_queue.push(ESCROW_RETURN);
-				dispense_timer.set(dispense_time = now + std::chrono::seconds(1));
+				session_ending = true;
 			}
+			dispense_time = std::chrono::steady_clock::time_point::max();
 		}
 		switch (transmit_state) {
 			case QUIESCENT:
@@ -518,6 +517,9 @@ int main(int argc, char *argv[]) {
 			case WAITING:
 				if (now >= transmit_time) {
 					// VMC did not request retransmission; assume byte was successfully received
+					if ((transmit_queue.front() & ~TUBE25_SENSE_UPPER_FLAG) == ESCROW_RETURN) {
+						dispense_timer.set(dispense_time = now + std::chrono::seconds(2));
+					}
 					transmit_state = QUIESCENT;
 					transmit_queue.pop();
 					if (elog.trace_enabled()) {
