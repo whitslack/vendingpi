@@ -1,0 +1,164 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2708";
+
+	fragment@0 {
+		target = <&gpio>;
+		__overlay__ {
+			micromech_input_pins: micromech_input_pins {
+				brcm,pins =
+						<22>,	// SEND_IN
+						<11>,	// INTERRUPT_IN
+						<10>,	// ACCEPT_ENABLE_IN
+						 <4>,	// DISPENSE25_IN
+						<17>,	// DISPENSE10_IN
+						 <9>,	// DISPENSE5_IN
+						 <3>;	// RESET_IN
+				brcm,function = <0>; // input
+				brcm,pull = <2>; // up
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			micromech_input {
+				compatible = "gpio-keys";
+				label = "MicroMech input";
+				pinctrl-names = "default";
+				pinctrl-0 = <&micromech_input_pins>;
+
+				micromech_send_in: send_in {
+					label = "SEND_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <3>;
+					gpios = <&gpio 22 1>;
+				};
+
+				micromech_interrupt_in: interrupt_in {
+					label = "INTERRUPT_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <4>;
+					gpios = <&gpio 11 1>;
+				};
+
+				micromech_accept_enable_in: accept_enable_in {
+					label = "ACCEPT_ENABLE_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <6>;
+					gpios = <&gpio 10 1>;
+				};
+
+				micromech_dispense25_in: dispense25_in {
+					label = "DISPENSE25_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <7>;
+					gpios = <&gpio 4 1>;
+				};
+
+				micromech_dispense10_in: dispense10_in {
+					label = "DISPENSE10_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <8>;
+					gpios = <&gpio 17 1>;
+				};
+
+				micromech_dispense5_in: dispense5_in {
+					label = "DISPENSE5_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <9>;
+					gpios = <&gpio 9 1>;
+				};
+
+				micromech_reset_in: reset_in {
+					label = "RESET_IN";
+					debounce-interval = <0>;
+					linux,input-type = <5>; // EV_SW
+					linux,code = <11>;
+					gpios = <&gpio 3 0>;
+				};
+			};
+
+			micromech_output {
+				compatible = "gpio-leds";
+
+				micromech_send_out: micromech_send_out {
+					label = "SEND_OUT";
+					gpios = <&gpio 18 1>;
+				};
+
+				micromech_interrupt_out: micromech_interrupt_out {
+					label = "INTERRUPT_OUT";
+					gpios = <&gpio 24 1>;
+				};
+
+				micromech_accept_enable_out: micromech_accept_enable_out {
+					label = "ACCEPT_ENABLE_OUT";
+					gpios = <&gpio 25 1>;
+				};
+
+				micromech_dispense25_out: micromech_dispense25_out {
+					label = "DISPENSE25_OUT";
+					gpios = <&gpio 23 1>;
+				};
+
+				micromech_dispense10_out: micromech_dispense10_out {
+					label = "DISPENSE10_OUT";
+					gpios = <&gpio 8 1>;
+				};
+
+				micromech_dispense5_out: micromech_dispense5_out {
+					label = "DISPENSE5_OUT";
+					gpios = <&gpio 7 1>;
+				};
+
+				micromech_reset_out: micromech_reset_out {
+					label = "RESET_OUT";
+					gpios = <&gpio 27 0>;
+					default-state = "on";
+				};
+
+				micromech_dispense_enable_out: micromech_dispense_enable_out {
+					label = "DISPENSE_ENABLE_OUT";
+					gpios = <&gpio 2 1>;
+				};
+			};
+		};
+	};
+
+	__overrides__ {
+		send_in_pin = <&micromech_input_pins>,"brcm,pins:0",
+				<&micromech_send_in>,"gpios:4";
+		interrupt_in_pin = <&micromech_input_pins>,"brcm,pins:4",
+				<&micromech_interrupt_in>,"gpios:4";
+		accept_enable_in_pin = <&micromech_input_pins>,"brcm,pins:8",
+				<&micromech_accept_enable_in>,"gpios:4";
+		dispense25_in_pin = <&micromech_input_pins>,"brcm,pins:12",
+				<&micromech_dispense25_in>,"gpios:4";
+		dispense10_in_pin = <&micromech_input_pins>,"brcm,pins:16",
+				<&micromech_dispense10_in>,"gpios:4";
+		dispense5_in_pin = <&micromech_input_pins>,"brcm,pins:20",
+				<&micromech_dispense5_in>,"gpios:4";
+		reset_in_pin = <&micromech_input_pins>,"brcm,pins:24",
+				<&micromech_reset_in>,"gpios:4";
+
+		send_out_pin = <&micromech_send_out>,"gpios:4";
+		interrupt_out_pin = <&micromech_interrupt_out>,"gpios:4";
+		accept_enable_out_pin = <&micromech_accept_enable_out>,"gpios:4";
+		dispense25_out_pin = <&micromech_dispense25_out>,"gpios:4";
+		dispense10_out_pin = <&micromech_dispense10_out>,"gpios:4";
+		dispense5_out_pin = <&micromech_dispense5_out>,"gpios:4";
+		reset_out_pin = <&micromech_reset_out>,"gpios:4";
+		dispense_enable_out_pin = <&micromech_dispense_enable_out>,"gpios:4";
+	};
+
+};

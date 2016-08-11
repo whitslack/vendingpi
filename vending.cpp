@@ -1,7 +1,3 @@
-#if (RPI_REV != 1) && (RPI_REV != 2)
-#error Must specify Raspberry Pi revision in RPI_REV macro.
-#endif
-
 #include <chrono>
 #include <ctime>
 #include <iostream>
@@ -12,7 +8,8 @@
 #include <poll.h>
 
 #include "bitcoin.h"
-#include "gpio.h"
+#include "evdev.h"
+#include "led.h"
 #include "common/log.h"
 #include "common/memory.h"
 #include "common/narrow.h"
@@ -25,35 +22,18 @@
 Log elog(Log::TRACE);
 
 static const char SERIAL_DEVICE[] = "/dev/ttyAMA0";
+static const char INPUT_DEVICE[] = "/dev/input/by-path/platform-micromech_input-event";
 static constexpr std::chrono::steady_clock::duration session_timeout = std::chrono::seconds(30);
 
-enum Pin {
-	PIN_SEND_IN = 22,
-	PIN_INTERRUPT_OUT = 24,
-	PIN_DATA_OUT = 14, // TXD
-	PIN_ACCEPT_ENABLE_IN = 10,
-	PIN_DISPENSE25_IN = 4,
-	PIN_DISPENSE10_IN = 17,
-	PIN_DISPENSE5_IN = 9,
-#if RPI_REV == 1
-	PIN_RESET_IN = 1,
-#elif RPI_REV == 2
-	PIN_RESET_IN = 3,
-#endif
-	PIN_SEND_OUT = 18,
-	PIN_INTERRUPT_IN = 11,
-	PIN_DATA_IN = 15, // RXD
-	PIN_ACCEPT_ENABLE_OUT = 25,
-	PIN_DISPENSE25_OUT = 23,
-	PIN_DISPENSE10_OUT = 8,
-	PIN_DISPENSE5_OUT = 7,
-#if RPI_REV == 1
-	PIN_RESET_OUT = 21,
-	PIN_DISPENSE_ENABLE_OUT = 0,
-#elif RPI_REV == 2
-	PIN_RESET_OUT = 27,
-	PIN_DISPENSE_ENABLE_OUT = 2,
-#endif
+enum MicroMechPin {
+	SEND = 3,
+	INTERRUPT = 4,
+// 	DATA = 5,
+	ACCEPT_ENABLE = 6,
+	DISPENSE25 = 7,
+	DISPENSE10 = 8,
+	DISPENSE5 = 9,
+	RESET = 11,
 };
 
 enum MessageClass {
@@ -205,8 +185,16 @@ COINCO_9300_L = {
 
 static Bitcoin *bitcoin_ptr;
 
+static constexpr std::chrono::microseconds timeval_to_duration(const struct timeval &tv) {
+	return std::chrono::seconds(tv.tv_sec) + std::chrono::microseconds(tv.tv_usec);
+}
+
 static constexpr std::chrono::steady_clock::rep microtimestamp(std::chrono::steady_clock::time_point time_point = std::chrono::steady_clock::now()) {
 	return std::chrono::duration_cast<std::chrono::microseconds>(time_point.time_since_epoch()).count();
+}
+
+static constexpr std::chrono::steady_clock::rep microtimestamp(const struct timeval &tv) {
+	return microtimestamp(std::chrono::steady_clock::time_point(timeval_to_duration(tv)));
 }
 
 static void handler(int) {
@@ -246,21 +234,6 @@ int main(int argc, char *argv[]) {
 	EventFD event_fd;
 #ifndef NO_HARDWARE
 	FileDescriptor data_fd(SERIAL_DEVICE, O_RDWR | O_CLOEXEC);
-	GPIO send_in(PIN_SEND_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO interrupt_in(PIN_INTERRUPT_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO accept_enable_in(PIN_ACCEPT_ENABLE_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO dispense25_in(PIN_DISPENSE25_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO dispense10_in(PIN_DISPENSE10_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO dispense5_in(PIN_DISPENSE5_IN, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::IN);
-	GPIO reset_in(PIN_RESET_IN, GPIO::Polarity::ACTIVE_HIGH, GPIO::Direction::IN);
-	GPIO send_out(PIN_SEND_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO interrupt_out(PIN_INTERRUPT_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO accept_enable_out(PIN_ACCEPT_ENABLE_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO dispense25_out(PIN_DISPENSE25_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO dispense10_out(PIN_DISPENSE10_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO dispense5_out(PIN_DISPENSE5_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::HIGH);
-	GPIO reset_out(PIN_RESET_OUT, GPIO::Polarity::ACTIVE_HIGH, GPIO::Direction::LOW);
-	GPIO dispense_enable_out(PIN_DISPENSE_ENABLE_OUT, GPIO::Polarity::ACTIVE_LOW, GPIO::Direction::LOW);
 	{
 		struct termios tios;
 		posix::tcgetattr(data_fd, tios);
@@ -269,13 +242,18 @@ int main(int argc, char *argv[]) {
 		posix::cfsetospeed(tios, B600);
 		posix::tcsetattr(data_fd, TCSANOW, tios);
 	}
-	send_in.edge(GPIO::Edge::BOTH);
-	interrupt_in.edge(GPIO::Edge::BOTH);
-	accept_enable_in.edge(GPIO::Edge::BOTH);
-	dispense25_in.edge(GPIO::Edge::BOTH);
-	dispense10_in.edge(GPIO::Edge::BOTH);
-	dispense5_in.edge(GPIO::Edge::BOTH);
-	reset_in.edge(GPIO::Edge::BOTH);
+	EvDev input(INPUT_DEVICE);
+	LED send_out("SEND_OUT");
+	LED interrupt_out("INTERRUPT_OUT");
+	LED accept_enable_out("ACCEPT_ENABLE_OUT");
+	LED dispense25_out("DISPENSE25_OUT");
+	LED dispense10_out("DISPENSE10_OUT");
+	LED dispense5_out("DISPENSE5_OUT");
+	LED reset_out("RESET_OUT");
+	LED dispense_enable_out("DISPENSE_ENABLE_OUT");
+	reset_out = true;
+	dispense5_out = dispense10_out = dispense25_out = accept_enable_out = interrupt_out = send_out = false;
+	dispense_enable_out = true;
 #endif
 
 	Bitcoin bitcoin(host, port, testnet, bitcoin_privkey, event_fd);
@@ -315,7 +293,7 @@ int main(int argc, char *argv[]) {
 	posix::Timer<std::chrono::steady_clock> transmit_timer;
 	std::chrono::steady_clock::time_point transmit_time = std::chrono::steady_clock::time_point::max();
 
-	bool accept_enabled = accept_enable_in.value(), receiving = false, session_ending = false;
+	bool accept_enabled, receiving = false, session_ending = false;
 
 	bool dispensing25_in = false, dispensing25_out = false;
 	bool dispensing10_in = false, dispensing10_out = false;
@@ -329,14 +307,14 @@ int main(int argc, char *argv[]) {
 			if (elog.trace_enabled()) {
 				elog.trace() << microtimestamp() << " SEND_OUT " << receiving << std::endl;
 			}
-			send_out.value(receiving);
+			send_out = receiving;
 		}
 	};
 	auto accept_enable_changed = [&](bool accept_enable) {
 		if (elog.trace_enabled()) {
 			elog.trace() << microtimestamp() << " ACCEPT_ENABLE_OUT " << accept_enable << std::endl;
 		}
-		accept_enable_out.value(accept_enable);
+		accept_enable_out = accept_enable;
 		if (!accept_enable) {
 			// send tube status message
 			uint8_t status = static_cast<uint8_t>(TUBE_STATUS | tube_status());
@@ -351,28 +329,34 @@ int main(int argc, char *argv[]) {
 		if (elog.trace_enabled()) {
 			elog.trace() << microtimestamp() << " RESET_OUT " << reset << std::endl;
 		}
-		reset_out.value(reset);
+		reset_out = reset;
 	};
+
+	{
+		unsigned long bits[(SW_CNT + LONG_BIT - 1) / LONG_BIT];
+		input.ioctl(EVIOCGSW(std::size(bits)), bits);
+		bool interrupt = bits[INTERRUPT / LONG_BIT] & (1 << INTERRUPT % LONG_BIT);
+		bool accept_enable = bits[ACCEPT_ENABLE / LONG_BIT] & (1 << ACCEPT_ENABLE % LONG_BIT);
+		bool reset = bits[RESET / LONG_BIT] & (1 << RESET % LONG_BIT);
+		if (elog.trace_enabled()) {
+			elog.trace() << "INTERRUPT_IN " << interrupt << ',' << " ACCEPT_ENABLE_IN " << accept_enable << ',' << " RESET_IN " << reset << std::endl;
+		}
+		interrupt_changed(interrupt);
+		accept_enable_changed(accept_enable);
+		reset_changed(reset);
+	}
 
 	struct pollfd pfds[] = {
 		{ event_fd, POLLIN, 0 },
 #ifndef NO_HARDWARE
 		{ data_fd, POLLIN, 0 },
-		{ send_in, POLLPRI, 0 },
-		{ interrupt_in, POLLPRI, 0 },
-		{ accept_enable_in, POLLPRI, 0 },
-		{ dispense25_in, POLLPRI, 0 },
-		{ dispense10_in, POLLPRI, 0 },
-		{ dispense5_in, POLLPRI, 0 },
-		{ reset_in, POLLPRI, 0 },
+		{ input, POLLIN, 0 },
 #endif
 		{ STDIN_FILENO, POLLIN, 0 },
 	};
 	nfds_t nfds = std::size(pfds);
 	for (;;) {
-		std::chrono::steady_clock::time_point now;
 		if (posix::ppoll(pfds, nfds, nullptr, posix::SignalSet{ }) > 0) {
-			now = std::chrono::steady_clock::now();
 			if (pfds[0].revents) {
 				auto counter = event_fd.read();
 				if (counter > 0) {
@@ -388,14 +372,14 @@ int main(int argc, char *argv[]) {
 				uint8_t data;
 				if (data_fd.read(&data, sizeof data) > 0) {
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp(now) << " DATA_IN " << print_data(data, receiving) << std::endl;
+						elog.trace() << microtimestamp() << " DATA_IN " << print_data(data, receiving) << std::endl;
 					}
 					if (receiving) {
 						receiving = false;
 						if (elog.trace_enabled()) {
 							elog.trace() << microtimestamp() << " SEND_OUT " << false << std::endl;
 						}
-						send_out.value(false);
+						send_out = false;
 						if ((data & CLASS_MASK) != COIN_MESSAGE) { // non-coin event
 							transmit_queue.push(data);
 							tube25_full_threshold = (data & TUBE25_SENSE_UPPER_FLAG) ? tube_levels->tube25_full_threshold : tube_levels->tube25_mid_threshold;
@@ -451,89 +435,97 @@ int main(int argc, char *argv[]) {
 				}
 			}
 			if (pfds[2].revents) {
-				bool send = send_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp(now) << " SEND_IN " << send << std::endl;
-				}
-				if (send) {
-					// VMC is ready to receive
-					if (transmit_state == INTERRUPTING || transmit_state == WAITING) {
-						transmit_state = SENDING;
-						transmit_timer.clear();
-						if (elog.trace_enabled()) {
-							elog.trace() << microtimestamp() << " DATA_OUT " << print_data(transmit_queue.front(), true) << std::endl;
+				auto event = input.read_event();
+				if (event.type == EV_SW) {
+					switch (static_cast<MicroMechPin>(event.code)) {
+						case SEND: {
+							bool send = event.value;
+							if (elog.trace_enabled()) {
+								elog.trace() << microtimestamp(event.time) << " SEND_IN " << send << std::endl;
+							}
+							if (send) {
+								// VMC is ready to receive
+								if (transmit_state == INTERRUPTING || transmit_state == WAITING) {
+									transmit_state = SENDING;
+									transmit_timer.clear();
+									if (elog.trace_enabled()) {
+										elog.trace() << microtimestamp() << " DATA_OUT " << print_data(transmit_queue.front(), true) << std::endl;
+									}
+									data_fd.write_fully(&transmit_queue.front(), sizeof(uint8_t));
+								}
+							}
+							else if (transmit_state == SENDING) {
+								// VMC has received a byte; wait ~5 ms in case VMC requests retransmission
+								transmit_state = WAITING;
+								transmit_timer.set(transmit_time = std::chrono::steady_clock::time_point(timeval_to_duration(event.time)) + std::chrono::microseconds(4500)); // 5 ms +/- 0.5 ms
+							}
+							break;
 						}
-						data_fd.write_fully(&transmit_queue.front(), sizeof(uint8_t));
+						case INTERRUPT: {
+							bool interrupt = event.value;
+							if (elog.trace_enabled()) {
+								elog.trace() << microtimestamp(event.time) << " INTERRUPT_IN " << interrupt << std::endl;
+							}
+							interrupt_changed(interrupt);
+							break;
+						}
+						case ACCEPT_ENABLE: {
+							bool accept_enable = event.value;
+							if (elog.trace_enabled()) {
+								elog.trace() << microtimestamp(event.time) << " ACCEPT_ENABLE_IN " << accept_enable << std::endl;
+							}
+							accept_enable_changed(accept_enable);
+							break;
+						}
+#define _(C) \
+						case DISPENSE##C: { \
+							bool dispense##C = event.value; \
+							if (elog.trace_enabled()) { \
+								elog.trace() << microtimestamp(event.time) << " DISPENSE" #C "_IN " << dispense##C << std::endl; \
+							} \
+							if (dispense##C != dispensing##C##_in) { \
+								if ((dispensing##C##_in = dispense##C)) { \
+									if (session_ending) { \
+										if (virtual_cents_in >= C) { \
+											virtual_cents_in -= C, virtual_cents_out += C; \
+										} \
+										else { \
+											if (elog.trace_enabled()) { \
+												elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
+											} \
+											dispense##C##_out = dispensing##C##_out = true; \
+											least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
+											most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
+										} \
+										dispense_timer.set(dispense_time = std::chrono::steady_clock::time_point(timeval_to_duration(event.time)) + std::chrono::seconds(1)); \
+									} \
+									else { \
+										credit += C; \
+									} \
+								} \
+								else if (dispensing##C##_out) { \
+									if (elog.trace_enabled()) { \
+										elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << false << std::endl; \
+									} \
+									dispense##C##_out = dispensing##C##_out = false; \
+								} \
+							} \
+							break; \
+						}
+						_(25)
+						_(10)
+						_(5)
+#undef _
+						case RESET: {
+							bool reset = event.value;
+							if (elog.trace_enabled()) {
+								elog.trace() << microtimestamp(event.time) << " RESET_IN " << reset << std::endl;
+							}
+							reset_changed(reset);
+							break;
+						}
 					}
 				}
-				else if (transmit_state == SENDING) {
-					// VMC has received a byte; wait ~5 ms in case VMC requests retransmission
-					transmit_state = WAITING;
-					transmit_timer.set(transmit_time = now + std::chrono::microseconds(4500)); // 5 ms +/- 0.5 ms
-				}
-			}
-			if (pfds[3].revents) {
-				bool interrupt = interrupt_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp(now) << " INTERRUPT_IN " << interrupt << std::endl;
-				}
-				interrupt_changed(interrupt);
-			}
-			if (pfds[4].revents) {
-				bool accept_enable = accept_enable_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp(now) << " ACCEPT_ENABLE_IN " << accept_enable << std::endl;
-				}
-				accept_enable_changed(accept_enable);
-			}
-#define _(C) \
-				bool dispense##C = dispense##C##_in.value(); \
-				if (elog.trace_enabled()) { \
-					elog.trace() << microtimestamp(now) << " DISPENSE" #C "_IN " << dispense##C << std::endl; \
-				} \
-				if (dispense##C != dispensing##C##_in) { \
-					if ((dispensing##C##_in = dispense##C)) { \
-						if (session_ending) { \
-							if (virtual_cents_in >= C) { \
-								virtual_cents_in -= C, virtual_cents_out += C; \
-							} \
-							else { \
-								if (elog.trace_enabled()) { \
-									elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
-								} \
-								dispense##C##_out.value(dispensing##C##_out = true); \
-								least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
-								most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
-							} \
-							dispense_timer.set(dispense_time = now + std::chrono::seconds(1)); \
-						} \
-						else { \
-							credit += C; \
-						} \
-					} \
-					else if (dispensing##C##_out) { \
-						if (elog.trace_enabled()) { \
-							elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << false << std::endl; \
-						} \
-						dispense##C##_out.value(dispensing##C##_out = false); \
-					} \
-				}
-			if (pfds[5].revents) {
-				_(25)
-			}
-			if (pfds[6].revents) {
-				_(10)
-			}
-			if (pfds[7].revents) {
-				_(5)
-			}
-#undef _
-			if (pfds[8].revents) {
-				bool reset = reset_in.value();
-				if (elog.trace_enabled()) {
-					elog.trace() << microtimestamp(now) << " RESET_IN " << reset << std::endl;
-				}
-				reset_changed(reset);
 			}
 #endif
 			if (pfds[std::size(pfds) - 1].revents) {
@@ -560,9 +552,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 #ifndef NO_HARDWARE
-		else {
-			now = std::chrono::steady_clock::now();
-		}
+		auto now = std::chrono::steady_clock::now();
 		if (now >= dispense_time) {
 			if (session_ending) {
 				// VMC has finished dispensing change; return to customer
@@ -624,7 +614,7 @@ int main(int argc, char *argv[]) {
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp() << " INTERRUPT_OUT " << true << std::endl;
 				}
-				interrupt_out.value(true);
+				interrupt_out = true;
 				break;
 			case WAITING:
 				if (now >= transmit_time) {
@@ -637,7 +627,7 @@ int main(int argc, char *argv[]) {
 					if (elog.trace_enabled()) {
 						elog.trace() << microtimestamp() << " INTERRUPT_OUT " << false << std::endl;
 					}
-					interrupt_out.value(false);
+					interrupt_out = false;
 					// minimum quiescent period is unspecified; 20 ms is known to be too short; assume 50 ms is safe
 					transmit_timer.set(transmit_time = now + std::chrono::milliseconds(50));
 				}
