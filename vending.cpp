@@ -25,6 +25,7 @@
 Log elog(Log::TRACE);
 
 static const char SERIAL_DEVICE[] = "/dev/ttyAMA0";
+static constexpr std::chrono::steady_clock::duration session_timeout = std::chrono::seconds(30);
 
 enum Pin {
 	PIN_SEND_IN = 22,
@@ -55,8 +56,13 @@ enum Pin {
 #endif
 };
 
+enum MessageClass {
+	COIN_MESSAGE = 0 << 1,
+	STATUS_MESSAGE = 1 << 1,
+	CLASS_MASK = 1 << 1,
+};
+
 enum Status {
-	STATUS_FLAG = 1 << 1,
 	POWER_UP = 0x63,
 	DEFECTIVE_SENSOR = 0x67,
 	ESCROW_RETURN = 0x6E,
@@ -68,11 +74,35 @@ enum Status {
 	TUBE25_SENSE_UPPER_FLAG = 1 << 4,
 };
 
+static const char * status_str(Status status) {
+	switch (status) {
+		case POWER_UP:
+			return "POWER_UP";
+		case DEFECTIVE_SENSOR:
+			return "DEFECTIVE_SENSOR";
+		case ESCROW_RETURN:
+			return "ESCROW_RETURN";
+		case SLUG:
+			return "SLUG";
+		case NO_STROBE:
+			return "NO_STROBE";
+		case DOUBLE_ARRIVAL:
+			return "DOUBLE_ARRIVAL";
+		case COIN_JAM:
+			return "COIN_JAM";
+		case DOLLAR_COIN_NOT_ACCEPTED:
+			return "DOLLAR_COIN_NOT_ACCEPTED";
+		default:
+			return "?!";
+	}
+}
+
 enum TubeStatus {
 	TUBE_STATUS = 0x23,
 	TUBE25_NOT_EMPTY = 1 << 2,
 	TUBE10_NOT_EMPTY = 1 << 3,
 	TUBE5_NOT_EMPTY = 1 << 4,
+	TUBE_STATUS_MASK = TUBE25_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE5_NOT_EMPTY,
 };
 
 enum CoinRouting {
@@ -88,6 +118,73 @@ enum CoinValue {
 	COIN5 = 3 << 5,
 	COIN_MASK = 3 << 5,
 };
+
+struct print_data {
+	uint8_t data;
+	bool synchronous;
+	explicit print_data(uint8_t data, bool synchronous) : data(data), synchronous(synchronous) { }
+};
+static std::ostream & operator << (std::ostream &os, const print_data &pd) {
+	os << std::hex << std::showbase << static_cast<unsigned>(pd.data) << " (";
+	if (pd.synchronous) {
+		if ((pd.data & CLASS_MASK) == COIN_MESSAGE) {
+			switch (pd.data & COIN_MASK) {
+				case COIN100:
+					os << "COIN100";
+					break;
+				case COIN25:
+					os << "COIN25";
+					break;
+				case COIN10:
+					os << "COIN10";
+					break;
+				case COIN5:
+					os << "COIN5";
+					break;
+			}
+			if ((pd.data & ROUTING_MASK) == CASH_BOX) {
+				os << " | CASH_BOX";
+			}
+			else {
+				os << " | INVENTORY_TUBE";
+			}
+			if (pd.data & TUBE25_NOT_EMPTY) {
+				os << " | TUBE25_NOT_EMPTY";
+			}
+			if (pd.data & TUBE10_NOT_EMPTY) {
+				os << " | TUBE10_NOT_EMPTY";
+			}
+			if (pd.data & TUBE5_NOT_EMPTY) {
+				os << " | TUBE5_NOT_EMPTY";
+			}
+			if (pd.data & ~(CLASS_MASK | COIN_MASK | ROUTING_MASK | TUBE_STATUS_MASK)) {
+				os << " | " << static_cast<unsigned>(pd.data & ~(CLASS_MASK | COIN_MASK | ROUTING_MASK | TUBE_STATUS_MASK));
+			}
+		}
+		else {
+			os << status_str(static_cast<Status>(pd.data & ~TUBE25_SENSE_UPPER_FLAG));
+			if (pd.data & TUBE25_SENSE_UPPER_FLAG) {
+				os << " | TUBE25_SENSE_UPPER_FLAG";
+			}
+		}
+	}
+	else if ((pd.data & ~TUBE_STATUS_MASK) == TUBE_STATUS) {
+		os << "TUBE_STATUS";
+		if (pd.data & TUBE25_NOT_EMPTY) {
+			os << " | TUBE25_NOT_EMPTY";
+		}
+		if (pd.data & TUBE10_NOT_EMPTY) {
+			os << " | TUBE10_NOT_EMPTY";
+		}
+		if (pd.data & TUBE5_NOT_EMPTY) {
+			os << " | TUBE5_NOT_EMPTY";
+		}
+	}
+	else {
+		os << "?!";
+	}
+	return os << ')' << std::dec;
+}
 
 static const struct {
 	unsigned tube25_low_threshold, tube25_mid_threshold, tube25_full_threshold, tube25_capacity;
@@ -197,21 +294,6 @@ int main(int argc, char *argv[]) {
 				(virtual_cents_in >= 10 || least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
 				(virtual_cents_in >= 5 || least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
 	};
-	auto print_tube_status = [&](std::ostream &os) -> std::ostream & {
-		os << "tube status: 25c:" << least_25c_coins;
-		if (most_25c_coins != least_25c_coins) {
-			os << '-' << most_25c_coins;
-		}
-		os << ", 10c:" << least_10c_coins;
-		if (most_10c_coins != least_10c_coins) {
-			os << '-' << most_10c_coins;
-		}
-		os << ", 5c:" << least_5c_coins;
-		if (most_5c_coins != least_5c_coins) {
-			os << '-' << most_5c_coins;
-		}
-		return os;
-	};
 	auto process_tube_status = [&](uint8_t data) {
 #define _(C) \
 		if (data & TUBE##C##_NOT_EMPTY) { \
@@ -275,7 +357,7 @@ int main(int argc, char *argv[]) {
 				uint8_t data;
 				if (data_fd.read(&data, sizeof data) > 0) {
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp(now) << " DATA_IN " << std::hex << std::showbase << static_cast<unsigned>(data) << std::dec << std::endl;
+						elog.trace() << microtimestamp(now) << " DATA_IN " << print_data(data, receiving) << std::endl;
 					}
 					if (receiving) {
 						receiving = false;
@@ -283,7 +365,7 @@ int main(int argc, char *argv[]) {
 							elog.trace() << microtimestamp() << " SEND_OUT " << false << std::endl;
 						}
 						send_out.value(false);
-						if (data & STATUS_FLAG) { // non-coin event
+						if ((data & CLASS_MASK) != COIN_MESSAGE) { // non-coin event
 							transmit_queue.push(data);
 							tube25_full_threshold = (data & TUBE25_SENSE_UPPER_FLAG) ? tube_levels->tube25_full_threshold : tube_levels->tube25_mid_threshold;
 							if ((data & ~TUBE25_SENSE_UPPER_FLAG) == ESCROW_RETURN) {
@@ -311,13 +393,29 @@ int main(int argc, char *argv[]) {
 							}
 							process_tube_status(data);
 						}
+						if (!session_ending) {
+							// (re)set session timeout
+							dispense_timer.set(dispense_time = std::chrono::steady_clock::now() + session_timeout);
+						}
 					}
-					else if ((data & ~(TUBE25_NOT_EMPTY | TUBE10_NOT_EMPTY | TUBE5_NOT_EMPTY)) == TUBE_STATUS) {
+					else if ((data & ~TUBE_STATUS_MASK) == TUBE_STATUS) {
 						process_tube_status(data);
 					}
 					if (elog.debug_enabled()) {
 						auto debug = elog.debug();
-						print_tube_status(debug) << std::endl;
+						debug << "tube status: 25c:" << least_25c_coins;
+						if (most_25c_coins != least_25c_coins) {
+							debug << '-' << most_25c_coins;
+						}
+						debug << ", 10c:" << least_10c_coins;
+						if (most_10c_coins != least_10c_coins) {
+							debug << '-' << most_10c_coins;
+						}
+						debug << ", 5c:" << least_5c_coins;
+						if (most_5c_coins != least_5c_coins) {
+							debug << '-' << most_5c_coins;
+						}
+						debug << std::endl;
 					}
 				}
 			}
@@ -332,7 +430,7 @@ int main(int argc, char *argv[]) {
 						transmit_state = SENDING;
 						transmit_timer.clear();
 						if (elog.trace_enabled()) {
-							elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(transmit_queue.front()) << std::dec << std::endl;
+							elog.trace() << microtimestamp() << " DATA_OUT " << print_data(transmit_queue.front(), true) << std::endl;
 						}
 						data_fd.write_fully(&transmit_queue.front(), sizeof(uint8_t));
 					}
@@ -367,7 +465,7 @@ int main(int argc, char *argv[]) {
 					// send tube status message
 					uint8_t status = static_cast<uint8_t>(TUBE_STATUS | tube_status());
 					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " DATA_OUT " << std::hex << std::showbase << static_cast<unsigned>(status) << std::dec << std::endl;
+						elog.trace() << microtimestamp() << " DATA_OUT " << print_data(status, false) << std::endl;
 					}
 					data_fd.write_fully(&status, sizeof status);
 				}
@@ -379,7 +477,7 @@ int main(int argc, char *argv[]) {
 					elog.trace() << microtimestamp(now) << " DISPENSE" #C "_IN " << dispense##C << std::endl; \
 				} \
 				if (dispense##C != dispensing##C##_in) { \
-					if (dispensing##C##_in = dispense##C) { \
+					if ((dispensing##C##_in = dispense##C)) { \
 						if (session_ending) { \
 							if (virtual_cents_in >= C) { \
 								virtual_cents_in -= C, virtual_cents_out += C; \
@@ -505,7 +603,7 @@ int main(int argc, char *argv[]) {
 						credit -= 5;
 					}
 					// (re)set session timeout
-					dispense_timer.set(dispense_time = now + std::chrono::seconds(30));
+					dispense_timer.set(dispense_time = now + session_timeout);
 				}
 				// we have a byte to send; interrupt the VMC
 				transmit_state = INTERRUPTING;
