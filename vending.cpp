@@ -323,6 +323,37 @@ int main(int argc, char *argv[]) {
 	posix::Timer<std::chrono::steady_clock> dispense_timer;
 	std::chrono::steady_clock::time_point dispense_time = std::chrono::steady_clock::time_point::max();
 
+	auto interrupt_changed = [&](bool interrupt) {
+		if (receiving != interrupt) {
+			receiving = interrupt;
+			if (elog.trace_enabled()) {
+				elog.trace() << microtimestamp() << " SEND_OUT " << receiving << std::endl;
+			}
+			send_out.value(receiving);
+		}
+	};
+	auto accept_enable_changed = [&](bool accept_enable) {
+		if (elog.trace_enabled()) {
+			elog.trace() << microtimestamp() << " ACCEPT_ENABLE_OUT " << accept_enable << std::endl;
+		}
+		accept_enable_out.value(accept_enable);
+		if (!accept_enable) {
+			// send tube status message
+			uint8_t status = static_cast<uint8_t>(TUBE_STATUS | tube_status());
+			if (elog.trace_enabled()) {
+				elog.trace() << microtimestamp() << " DATA_OUT " << print_data(status, false) << std::endl;
+			}
+			data_fd.write_fully(&status, sizeof status);
+		}
+		accept_enabled = accept_enable;
+	};
+	auto reset_changed = [&](bool reset) {
+		if (elog.trace_enabled()) {
+			elog.trace() << microtimestamp() << " RESET_OUT " << reset << std::endl;
+		}
+		reset_out.value(reset);
+	};
+
 	struct pollfd pfds[] = {
 		{ event_fd, POLLIN, 0 },
 #ifndef NO_HARDWARE
@@ -446,30 +477,14 @@ int main(int argc, char *argv[]) {
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp(now) << " INTERRUPT_IN " << interrupt << std::endl;
 				}
-				if (receiving != interrupt) {
-					receiving = interrupt;
-					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " SEND_OUT " << receiving << std::endl;
-					}
-					send_out.value(receiving);
-				}
+				interrupt_changed(interrupt);
 			}
 			if (pfds[4].revents) {
 				bool accept_enable = accept_enable_in.value();
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp(now) << " ACCEPT_ENABLE_IN " << accept_enable << std::endl;
-					elog.trace() << microtimestamp() << " ACCEPT_ENABLE_OUT " << accept_enable << std::endl;
 				}
-				accept_enable_out.value(accept_enable);
-				if (!accept_enable) {
-					// send tube status message
-					uint8_t status = static_cast<uint8_t>(TUBE_STATUS | tube_status());
-					if (elog.trace_enabled()) {
-						elog.trace() << microtimestamp() << " DATA_OUT " << print_data(status, false) << std::endl;
-					}
-					data_fd.write_fully(&status, sizeof status);
-				}
-				accept_enabled = accept_enable;
+				accept_enable_changed(accept_enable);
 			}
 #define _(C) \
 				bool dispense##C = dispense##C##_in.value(); \
@@ -517,9 +532,8 @@ int main(int argc, char *argv[]) {
 				bool reset = reset_in.value();
 				if (elog.trace_enabled()) {
 					elog.trace() << microtimestamp(now) << " RESET_IN " << reset << std::endl;
-					elog.trace() << microtimestamp() << " RESET_OUT " << reset << std::endl;
 				}
-				reset_out.value(reset);
+				reset_changed(reset);
 			}
 #endif
 			if (pfds[std::size(pfds) - 1].revents) {
