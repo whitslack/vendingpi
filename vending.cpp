@@ -263,25 +263,34 @@ int main(int argc, char *argv[]) {
 	int credit = 0, virtual_cents_in = 0, virtual_cents_out = 0;
 
 	unsigned tube25_full_threshold = tube_levels->tube25_full_threshold;
-	unsigned least_25c_coins = 0, most_25c_coins = tube_levels->tube25_capacity;
-	unsigned least_10c_coins = 0, most_10c_coins = tube_levels->tube10_capacity;
-	unsigned least_5c_coins = 0, most_5c_coins = tube_levels->tube5_capacity;
+	struct {
+		unsigned least_25c_coins, most_25c_coins;
+		unsigned least_10c_coins, most_10c_coins;
+		unsigned least_5c_coins, most_5c_coins;
+	} tubes;
+	bool tubes_dirty = false;
+	try {
+		FileDescriptor("tubes").read_fully(&tubes, sizeof tubes);
+	}
+	catch (...) {
+		tubes.least_25c_coins = 0, tubes.most_25c_coins = tube_levels->tube25_capacity;
+		tubes.least_10c_coins = 0, tubes.most_10c_coins = tube_levels->tube10_capacity;
+		tubes.least_5c_coins = 0, tubes.most_5c_coins = tube_levels->tube5_capacity;
+	}
 
 	auto tube_status = [&]() {
-		return (virtual_cents_in >= 25 || least_25c_coins >= tube_levels->tube25_low_threshold ? TUBE25_NOT_EMPTY : 0) |
-				(virtual_cents_in >= 10 || least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
-				(virtual_cents_in >= 5 || least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
+		return (virtual_cents_in >= 25 || tubes.least_25c_coins >= tube_levels->tube25_low_threshold ? TUBE25_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 10 || tubes.least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 5 || tubes.least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
 	};
 	auto process_tube_status = [&](uint8_t data) {
 #define _(C) \
-		if (data & TUBE##C##_NOT_EMPTY) { \
-			least_##C##c_coins = std::max<int>(least_##C##c_coins, tube_levels->tube##C##_low_threshold); \
-			most_##C##c_coins = std::max<int>(most_##C##c_coins, tube_levels->tube##C##_low_threshold); \
-		} \
-		else { \
-			least_##C##c_coins = std::min<int>(least_##C##c_coins, tube_levels->tube##C##_low_threshold - 1); \
-			most_##C##c_coins = std::min<int>(most_##C##c_coins, tube_levels->tube##C##_low_threshold - 1); \
-		}
+		tubes_dirty |= data & TUBE##C##_NOT_EMPTY ? \
+				(tubes.least_##C##c_coins < tube_levels->tube##C##_low_threshold && (tubes.least_##C##c_coins = tube_levels->tube##C##_low_threshold, true)) | \
+				(tubes.most_##C##c_coins < tube_levels->tube##C##_low_threshold && (tubes.most_##C##c_coins = tube_levels->tube##C##_low_threshold, true)) \
+				: \
+				(tubes.least_##C##c_coins >= tube_levels->tube##C##_low_threshold && (tubes.least_##C##c_coins = tube_levels->tube##C##_low_threshold - 1, true)) | \
+				(tubes.most_##C##c_coins >= tube_levels->tube##C##_low_threshold && (tubes.most_##C##c_coins = tube_levels->tube##C##_low_threshold - 1, true));
 		_(25)
 		_(10)
 		_(5)
@@ -392,14 +401,12 @@ int main(int argc, char *argv[]) {
 							switch (data & COIN_MASK) {
 #define _(C, F) \
 								case COIN##C: \
-									if ((data & ROUTING_MASK) == CASH_BOX) { \
-										least_##C##c_coins = std::max<int>(least_##C##c_coins, F); \
-										most_##C##c_coins = std::max<int>(most_##C##c_coins, F); \
-									} \
-									else { \
-										least_##C##c_coins = std::min<int>(least_##C##c_coins + 1, F); \
-										most_##C##c_coins = std::min<int>(most_##C##c_coins + 1, F); \
-									} \
+									tubes_dirty |= (data & ROUTING_MASK) == CASH_BOX ? \
+											(tubes.least_##C##c_coins < F && (tubes.least_##C##c_coins = F, true)) | \
+											(tubes.most_##C##c_coins < F && (tubes.most_##C##c_coins = F, true)) \
+											: \
+											(tubes.least_##C##c_coins < F && (++tubes.least_##C##c_coins, true)) | \
+											(tubes.most_##C##c_coins < F && (++tubes.most_##C##c_coins, true)); \
 									break;
 								_(25, tube25_full_threshold)
 								_(10, tube_levels->tube10_full_threshold)
@@ -415,22 +422,6 @@ int main(int argc, char *argv[]) {
 					}
 					else if ((data & ~TUBE_STATUS_MASK) == TUBE_STATUS) {
 						process_tube_status(data);
-					}
-					if (elog.debug_enabled()) {
-						auto debug = elog.debug();
-						debug << "tube status: 25c:" << least_25c_coins;
-						if (most_25c_coins != least_25c_coins) {
-							debug << '-' << most_25c_coins;
-						}
-						debug << ", 10c:" << least_10c_coins;
-						if (most_10c_coins != least_10c_coins) {
-							debug << '-' << most_10c_coins;
-						}
-						debug << ", 5c:" << least_5c_coins;
-						if (most_5c_coins != least_5c_coins) {
-							debug << '-' << most_5c_coins;
-						}
-						debug << std::endl;
 					}
 				}
 			}
@@ -494,8 +485,8 @@ int main(int argc, char *argv[]) {
 												elog.trace() << microtimestamp() << " DISPENSE" #C "_OUT " << true << std::endl; \
 											} \
 											dispense##C##_out = dispensing##C##_out = true; \
-											least_##C##c_coins = std::max<int>(least_##C##c_coins - 1, 0); \
-											most_##C##c_coins = std::max<int>(most_##C##c_coins - 1, 0); \
+											tubes_dirty |= (tubes.least_##C##c_coins > 0 && (--tubes.least_##C##c_coins, true)) | \
+													(tubes.most_##C##c_coins > 0 && (--tubes.most_##C##c_coins, true)); \
 										} \
 										dispense_timer.set(dispense_time = std::chrono::steady_clock::time_point(timeval_to_duration(event.time)) + std::chrono::seconds(1)); \
 									} \
@@ -552,6 +543,26 @@ int main(int argc, char *argv[]) {
 			}
 		}
 #ifndef NO_HARDWARE
+		if (tubes_dirty) {
+			if (elog.debug_enabled()) {
+				auto debug = elog.debug();
+				debug << "tube status: 25c:" << tubes.least_25c_coins;
+				if (tubes.most_25c_coins != tubes.least_25c_coins) {
+					debug << '-' << tubes.most_25c_coins;
+				}
+				debug << ", 10c:" << tubes.least_10c_coins;
+				if (tubes.most_10c_coins != tubes.least_10c_coins) {
+					debug << '-' << tubes.most_10c_coins;
+				}
+				debug << ", 5c:" << tubes.least_5c_coins;
+				if (tubes.most_5c_coins != tubes.least_5c_coins) {
+					debug << '-' << tubes.most_5c_coins;
+				}
+				debug << std::endl;
+			}
+			FileDescriptor("tubes", O_WRONLY | O_CREAT | O_CLOEXEC, 0644).write_fully(&tubes, sizeof tubes);
+			tubes_dirty = false;
+		}
 		auto now = std::chrono::steady_clock::now();
 		if (now >= dispense_time) {
 			if (session_ending) {
