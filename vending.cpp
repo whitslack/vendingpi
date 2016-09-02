@@ -567,14 +567,15 @@ int main(int argc, char *argv[]) {
 		if (now >= dispense_time) {
 			if (session_ending) {
 				// VMC has finished dispensing change; return to customer
-				virtual_cents_out += credit, virtual_cents_in = credit = 0;
+				auto cents = std::min(credit, virtual_cents_in);
+				virtual_cents_out += cents, credit -= cents;
 				if (virtual_cents_out > 0) {
 					if (elog.info_enabled()) {
 						elog.info() << "return " << virtual_cents_out << std::endl;
 					}
 					posix::pthread_sigqueue(bitcoin_thread.native_handle(), SIGRTMIN, virtual_cents_out);
 				}
-				virtual_cents_out = 0;
+				virtual_cents_in = virtual_cents_out = 0;
 				session_ending = false;
 			}
 			else {
