@@ -279,9 +279,9 @@ int main(int argc, char *argv[]) {
 	}
 
 	auto tube_status = [&]() {
-		return (virtual_cents_in >= 25 || tubes.least_25c_coins >= tube_levels->tube25_low_threshold ? TUBE25_NOT_EMPTY : 0) |
-				(virtual_cents_in >= 10 || tubes.least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
-				(virtual_cents_in >= 5 || tubes.least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
+		return (virtual_cents_in >= 25 - 2 || tubes.least_25c_coins >= tube_levels->tube25_low_threshold ? TUBE25_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 10 - 2 || tubes.least_10c_coins >= tube_levels->tube10_low_threshold ? TUBE10_NOT_EMPTY : 0) |
+				(virtual_cents_in >= 5 - 2 || tubes.least_5c_coins >= tube_levels->tube5_low_threshold ? TUBE5_NOT_EMPTY : 0);
 	};
 	auto process_tube_status = [&](uint8_t data) {
 #define _(C) \
@@ -477,8 +477,9 @@ int main(int argc, char *argv[]) {
 							if (dispense##C != dispensing##C##_in) { \
 								if ((dispensing##C##_in = dispense##C)) { \
 									if (session_ending) { \
-										if (virtual_cents_in >= C) { \
-											virtual_cents_in -= C, virtual_cents_out += C; \
+										if (virtual_cents_in >= C - 2) { \
+											auto cents = std::min(virtual_cents_in, C); \
+											virtual_cents_in -= cents, virtual_cents_out += cents, credit += C - cents; \
 										} \
 										else { \
 											if (elog.trace_enabled()) { \
